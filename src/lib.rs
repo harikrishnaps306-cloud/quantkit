@@ -8,6 +8,7 @@
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
 
+pub mod bsm;
 pub mod dist;
 mod error;
 mod option;
