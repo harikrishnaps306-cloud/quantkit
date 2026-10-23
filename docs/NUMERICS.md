@@ -123,21 +123,31 @@ assumed (see `docs/BENCHMARKS.md`).
 
 Guarantee:
 
-* **`Ok(sol)`**: `|BSM(sol.vol) - price| <= (tol + 4 eps) * price` with
-  `tol = max(tolerance, 8 eps)`, and `sol.vol` is inside the supported range.
-  `sol.residual` is that absolute error.
-* **Accuracy of the recovered volatility.** Out of the money the inversion is
-  well conditioned (`d ln b / d ln s >= 1`), and against prices from 150-digit
+* **`Ok(sol)`**: `|BSM(sol.vol) - price| <= (tol + 4 eps + 8 eps (1 + |ln price|)) * price`
+  with `tol = max(tolerance, 8 eps)`, and `sol.vol` is inside the supported
+  range. `sol.residual` is that absolute error. The last term is the rounding
+  noise of evaluating a tiny price as an exponential; it is below `1e-13` for
+  prices above `1e-30` and at most about `7e-13` at the smallest normal price.
+* **Accuracy of the recovered volatility.** Out of the money, and while the
+  price is not saturated against its upper bound (`s = sigma sqrt(T)` below
+  about 8), the inversion is well conditioned (`d ln b / d ln s >= 1`), and against prices from 150-digit
   arithmetic the solver recovers the generating volatility to a relative
   error of `1.1e-13` over 122 cases with `|d1|` from 0 to 36, expiries from
   0.003 to 1 year, volatilities 0.05 to 0.8, calls and puts, with rates and
   dividends (`implied_vol_recovers_the_true_volatility_deep_into_the_tails`).
-* **Not guaranteed**: recovery of the generating volatility for in-the-money
+* **Not guaranteed**: recovery when the price is saturated at its upper bound
+  (`s` of 10 or more: a call worth the spot to 8-16 digits has almost no
+  volatility information; in a 400,000-row random sweep every one of the 681
+  out-of-the-money recoveries worse than `1e-9` had `s >= 8`). Also not
+  guaranteed: recovery of the generating volatility for in-the-money
   options whose time value is tiny next to the intrinsic value. There the
   *time value* is the difference of two nearly equal prices and carries the
   absolute rounding error of the input price; the volatility error is about
   `residual / vega`, and `sol.vega` is returned so you can judge it
-  (`iv_round_trip_error_is_bounded_by_residual_over_vega`).
+  (`iv_round_trip_error_is_bounded_by_residual_over_vega`). A random sweep of
+  400,000 self-priced options found that every `PriceOutOfBounds` among them
+  (123,556, 31%) was an in-the-money option whose price equals its intrinsic
+  value in `f64`, i.e. carries no time-value information.
 * **`Err`**: `PriceOutOfBounds` (outside the no-arbitrage range, or outside
   what the supported volatility range can produce) or `NoConvergence`
   (carries the last residual and the iteration count).

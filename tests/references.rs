@@ -5,6 +5,7 @@
 
 use proptest::prelude::*;
 use quantkit::implied_vol::{solve_detailed, SolverConfig};
+use quantkit::mc::Rng;
 use quantkit::surface::SviParams;
 use quantkit::{binomial, bsm, greeks, ExerciseStyle, OptionParams, OptionType, QuantError};
 
@@ -290,4 +291,77 @@ proptest! {
                 "vol error {} * vega {vega_min} > price tolerance {tol}", (sol.vol - v).abs());
         }
     }
+}
+
+/// Seeded sweep over the whole supported region: price -> implied vol -> price.
+///
+/// * The documented residual guarantee must hold for every solved row.
+/// * The only rejections of model-generated prices may be `PriceOutOfBounds`
+///   (an in-the-money price equal to intrinsic value in `f64` carries no
+///   time-value information), never `NoConvergence`.
+/// * Out-of-the-money volatilities are recovered tightly whenever the price is
+///   not saturated against its upper bound (`sigma sqrt(T) < 6`).
+#[test]
+fn seeded_sweep_price_to_iv_to_price() {
+    let mut rng = Rng::new(2026);
+    let mut u = |lo: f64, hi: f64| lo + (hi - lo) * rng.next_f64();
+    let (mut solved, mut otm_checked) = (0usize, 0usize);
+    for _ in 0..30_000 {
+        let spot = (u(0.0, 1000f64.ln())).exp();
+        let strike = spot * u(0.1f64.ln(), 10f64.ln()).exp();
+        let t = u(1e-3f64.ln(), 30f64.ln()).exp();
+        let vol = u(0.005f64.ln(), 3f64.ln()).exp();
+        let (r, q) = (u(-0.02, 0.15), u(0.0, 0.08));
+        let kind = if u(0.0, 1.0) < 0.5 {
+            OptionType::Call
+        } else {
+            OptionType::Put
+        };
+        let Ok(p) = OptionParams::builder()
+            .spot(spot)
+            .strike(strike)
+            .rate(r)
+            .dividend_yield(q)
+            .volatility(vol)
+            .expiry(t)
+            .build()
+        else {
+            continue;
+        };
+        let price = bsm::price(&p, kind);
+        let cfg = SolverConfig::default();
+        match solve_detailed(p.contract(), kind, price, cfg) {
+            Ok(sol) => {
+                solved += 1;
+                let back = bsm::price(&p.with_vol(sol.vol).unwrap(), kind);
+                let noise = 8.0 * f64::EPSILON * (1.0 + price.ln().abs());
+                let allowed = (cfg.tolerance + 4.0 * f64::EPSILON + noise) * price * (1.0 + 1e-9);
+                assert!(
+                    (back - price).abs() <= allowed,
+                    "guarantee violated: {spot} {strike} {vol} {t}"
+                );
+                let (ds, dk) = (spot * (-q * t).exp(), strike * (-r * t).exp());
+                let otm = match kind {
+                    OptionType::Call => dk >= ds,
+                    OptionType::Put => dk <= ds,
+                };
+                if otm && vol * t.sqrt() < 6.0 && price > 1e-290 {
+                    otm_checked += 1;
+                    let rel = (sol.vol - vol).abs() / vol;
+                    assert!(
+                        rel < 1e-9,
+                        "OTM recovery {rel:e}: {spot} {strike} {vol} {t} {kind:?} price {price:e}"
+                    );
+                }
+            }
+            Err(QuantError::PriceOutOfBounds { .. }) => {}
+            Err(e) => {
+                panic!("model-generated price failed with {e}: {spot} {strike} {vol} {t} {kind:?}")
+            }
+        }
+    }
+    assert!(
+        solved > 5_000 && otm_checked > 3_000,
+        "sweep too small: {solved} / {otm_checked}"
+    );
 }

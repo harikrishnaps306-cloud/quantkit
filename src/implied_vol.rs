@@ -17,8 +17,10 @@
 //!
 //! * **On `Ok`**: the returned volatility lies inside the supported range
 //!   and the model price at that volatility is within
-//!   `(max(tolerance, 8 eps) + 4 eps) * market_price` of the market price
-//!   (absolute price residual, reported in [`IvSolution::residual`]).
+//!   `(max(tolerance, 8 eps) + 4 eps + 8 eps (1 + |ln price|)) * market_price`
+//!   of the market price (absolute price residual, reported in
+//!   [`IvSolution::residual`]); the last term is the rounding noise of evaluating
+//!   a tiny price as an exponential and is below `1e-13` for prices above `1e-30`.
 //! * **Recovery of the generating volatility** is accurate to a few
 //!   `1e-13` for out-of-the-money prices at any depth, but only as accurate as
 //!   `residual / vega` where vega is small, which includes in-the-money options
@@ -232,7 +234,12 @@ pub fn solve_detailed(
     let finish = |s: f64, iterations: usize, newton: usize| -> Result<IvSolution> {
         let vol = (s / sqrt_t).clamp(MIN_VOL, MAX_VOL);
         let residual = (model(vol)? - market_price).abs();
-        if residual > (tol + 4.0 * f64::EPSILON) * market_price {
+        // Prices far below 1 are evaluated as exp(log-scale + ln b) with a
+        // large negative argument, whose rounding noise is about
+        // eps * |ln price|; allow for it so the check is not stricter than the
+        // arithmetic can deliver (negligible for prices above 1e-30).
+        let noise = 8.0 * f64::EPSILON * (1.0 + libm::log(market_price).abs());
+        if residual > (tol + 4.0 * f64::EPSILON + noise) * market_price {
             return Err(QuantError::NoConvergence {
                 iterations,
                 residual,

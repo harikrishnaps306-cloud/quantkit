@@ -50,7 +50,7 @@ const LN_SQRT_2PI: f64 = 0.918_938_533_204_672_8;
 const SQRT_PI_2: f64 = 1.253_314_137_315_500_3;
 /// Beyond this `v`, `g` and `M` use the continued fraction.
 const CF_START: f64 = 3.0;
-const GL_N: usize = 16;
+const GL_N: usize = 12;
 /// The plain formula is used when `cancellation * curvature` is at most this,
 /// which bounds its relative error by about `FAST_LIMIT * eps` (2e-14).
 const FAST_LIMIT: f64 = 100.0;
@@ -269,8 +269,8 @@ mod tests {
     fn gauss_legendre_is_exact_for_polynomials() {
         let (x, w) = gauss_legendre();
         assert!((w.iter().sum::<f64>() - 2.0).abs() < 1e-15);
-        // Exact up to degree 2N - 1 = 31.
-        for k in [0, 1, 2, 7, 16, 30, 31] {
+        // Exact up to degree 2N - 1 = 23.
+        for k in [0, 1, 2, 7, 16, 22, 23] {
             let q: f64 = x.iter().zip(w).map(|(x, w)| w * x.powi(k)).sum();
             let exact = if k % 2 == 1 {
                 0.0
