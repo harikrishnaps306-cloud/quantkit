@@ -7,9 +7,15 @@
 //! `b(x, s)` of [`crate::black`], with `x = ln(F/K)` and `s = sigma sqrt(T)`.
 //! The solver finds `s` from `ln b(-|x|, s) = ln(time value / scale)` with a
 //! bracketed Newton iteration that falls back to geometric bisection. Working
-//! in logarithms keeps tiny prices (down to the smallest `f64`) as well
-//! conditioned as ordinary ones, and `b` is evaluated by a numerically stable
-//! method far out of the money, so there is no loss of precision in the tails.
+//! in logarithms keeps tiny prices (down to the smallest `f64`) from
+//! underflowing and makes the iteration scale-free, and `b` is evaluated by a
+//! numerically stable method far out of the money, so evaluation does not lose
+//! precision in the tails. What a price says about the volatility is a separate
+//! matter of conditioning, the elasticity `d ln price / d ln vol`, which
+//! is large in the tails (good) and small near the upper bound or for in-the-money
+//! prices that are almost all intrinsic value (bad); it is reported in
+//! [`IvSolution::elasticity`]. Log-domain arithmetic cannot create information
+//! that the `f64` price does not contain.
 //! This resembles Jaeckel's "Let's Be Rational" in its variables but is a
 //! simpler iteration (no rational starting guess, no third-order step).
 //!
@@ -152,8 +158,16 @@ pub struct IvSolution {
     pub newton_steps: usize,
     /// How many were bisection steps (fallback).
     pub bisection_steps: usize,
-    /// BSM vega at `vol`. Volatility error is roughly `residual / vega`.
+    /// BSM vega at `vol` (`d price / d vol`). Volatility error is roughly
+    /// `residual / vega`. It can underflow to `0.0` for prices near the
+    /// smallest `f64`; use [`elasticity`](Self::elasticity) for conditioning.
     pub vega: f64,
+    /// Conditioning of the inversion: the elasticity `d ln price / d ln vol`,
+    /// computed in logarithms so it does not underflow. A relative error `e` in
+    /// the price becomes a relative volatility error of about `e / elasticity`.
+    /// Large in the tails (a tiny price pins the volatility down), small when the
+    /// price is saturated near its upper bound or is almost all intrinsic value.
+    pub elasticity: f64,
 }
 
 /// Like [`solve_with`], returning [`IvSolution`] diagnostics.
@@ -224,6 +238,16 @@ pub fn solve_detailed(
         + (contract.rate() - contract.dividend_yield()) * t;
     let scale = disc_spot.sqrt() * disc_strike.sqrt();
     let time_value = market_price - lower;
+    // Below a few units in the last place of the price, the time value is
+    // rounding noise of the input (price and intrinsic value are both rounded).
+    let resolution = 8.0 * f64::EPSILON * market_price;
+    if time_value < resolution {
+        return Err(QuantError::PriceOutOfBounds {
+            price: market_price,
+            lower: lower + resolution,
+            upper: upper.min(p_hi),
+        });
+    }
     let ln_beta = libm::log(time_value) - libm::log(scale);
     let xo = -x.abs();
 
@@ -239,7 +263,11 @@ pub fn solve_detailed(
         // eps * |ln price|; allow for it so the check is not stricter than the
         // arithmetic can deliver (negligible for prices above 1e-30).
         let noise = 8.0 * f64::EPSILON * (1.0 + libm::log(market_price).abs());
-        if residual > (tol + 4.0 * f64::EPSILON + noise) * market_price {
+        // The absolute floor keeps the criterion meaningful for subnormal
+        // prices, where `tol * price` would round to zero or to one ulp.
+        let allowed =
+            ((tol + 4.0 * f64::EPSILON + noise) * market_price).max(4.0 * f64::from_bits(1));
+        if residual > allowed {
             return Err(QuantError::NoConvergence {
                 iterations,
                 residual,
@@ -253,6 +281,10 @@ pub fn solve_detailed(
             newton_steps: newton,
             bisection_steps: iterations - newton,
             vega: scale * libm::exp(ln_normalised_vega(xo, s_eff)) * sqrt_t,
+            elasticity: libm::exp(
+                libm::log(scale) + ln_normalised_vega(xo, s_eff) + libm::log(s_eff)
+                    - libm::log(market_price),
+            ),
         })
     };
 

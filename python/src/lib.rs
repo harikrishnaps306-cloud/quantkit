@@ -324,8 +324,12 @@ fn mc_american(
 }
 
 /// Longstaff-Schwartz with separate training and evaluation sizes/seeds.
-/// Returns a dict with the out-of-sample price and standard error, the
-/// in-sample price (biased high by overfitting) and fit diagnostics.
+/// `price`/`std_error` are the value of the fixed trained policy (including the
+/// time-zero decision, taken from the training paths) and the sampling error of
+/// its evaluation mean given that policy. Also returns the raw continuation value,
+/// the optimistic in-sample estimate, and observation counts (`*_paths` count
+/// simulated paths; `*_samples` count independent observations, antithetic pairs
+/// counting once).
 #[pyfunction]
 #[pyo3(signature = (spot, strike, rate, vol, expiry, is_call=false, div_yield=0.0, steps=50, train_paths=50_000, eval_paths=100_000, train_seed=1, eval_seed=2, antithetic=true))]
 #[allow(clippy::too_many_arguments)]
@@ -362,9 +366,15 @@ fn mc_american_detailed<'py>(
     let d = PyDict::new(py);
     d.set_item("price", r.price)?;
     d.set_item("std_error", r.std_error)?;
+    d.set_item("exercise_now", r.exercise_now)?;
+    d.set_item("immediate_exercise_value", r.immediate_exercise_value)?;
+    d.set_item("continuation_value", r.continuation_value)?;
+    d.set_item("continuation_std_error", r.continuation_std_error)?;
     d.set_item("in_sample_price", r.in_sample_price)?;
     d.set_item("in_sample_std_error", r.in_sample_std_error)?;
+    d.set_item("train_paths", r.train_paths)?;
     d.set_item("train_samples", r.train_samples)?;
+    d.set_item("eval_paths", r.eval_paths)?;
     d.set_item("eval_samples", r.eval_samples)?;
     d.set_item("fitted_dates", r.fitted_dates)?;
     d.set_item("regression_failures", r.regression_failures)?;
@@ -548,7 +558,7 @@ fn implied_vol_batch<'py>(
 
 /// Implied volatility with per-row diagnostics: `vol`, `status`, `residual` (absolute
 /// price error at `vol`, or the last residual of a non-converged row), `iterations`,
-/// `newton_steps`, `vega` (conditioning: vol error is about residual / vega) and `messages`.
+/// `newton_steps`, `vega`, `elasticity` (d ln price / d ln vol: a relative price error e becomes a relative vol error of about e / elasticity) and `messages`.
 #[pyfunction]
 #[pyo3(signature = (price, spot, strike, rate, expiry, is_call=true, div_yield=None, tolerance=1e-12, max_iterations=100))]
 #[allow(clippy::too_many_arguments)]
@@ -603,6 +613,10 @@ fn implied_vol_detailed<'py>(
     d.set_item(
         "vega",
         float_out(py, out.iter().map(|r| r.vega).collect(), &c.shape)?,
+    )?;
+    d.set_item(
+        "elasticity",
+        float_out(py, out.iter().map(|r| r.elasticity).collect(), &c.shape)?,
     )?;
     d.set_item("messages", messages(py, &er)?)?;
     Ok(d)

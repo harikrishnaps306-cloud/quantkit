@@ -32,7 +32,9 @@
 //!
 //! The integrand is positive and smooth, so Gauss-Legendre quadrature gives
 //! full relative accuracy with no cancellation, and `ln b = ln P + ln(integral)`
-//! never underflows. `g(v)` itself is computed without cancellation from the
+//! never underflows. (Avoiding underflow and cancellation is about the
+//! *evaluation*. How much a tiny price says about the volatility is a separate
+//! question of conditioning, `d ln b / d ln s`; see `crate::implied_vol`.) `g(v)` itself is computed without cancellation from the
 //! Laplace continued fraction for `M` when `v >= 3`.
 //!
 //! The ordinary formula is still used when an error estimate says it is
@@ -144,11 +146,17 @@ fn gauss_legendre() -> &'static ([f64; GL_N], [f64; GL_N]) {
 /// endpoints: for a narrow interval far from zero, `end - start` computed from
 /// rounded endpoints would lose most of its digits.
 fn integrate_g(a: f64, width: f64) -> f64 {
+    integrate_g_with(a, width, 1.0)
+}
+
+/// As [`integrate_g`], with every panel `shrink` times narrower (so
+/// `shrink = 8` uses eight times as many nodes). Used to check convergence.
+fn integrate_g_with(a: f64, width: f64, shrink: f64) -> f64 {
     let (nodes, weights) = gauss_legendre();
     let mut total = 0.0;
     let mut offset = 0.0;
     while offset < width {
-        let end = (offset + (a + offset).max(1.0)).min(width);
+        let end = (offset + (a + offset).max(1.0) / shrink).min(width);
         let (half, mid) = (0.5 * (end - offset), a + 0.5 * (end + offset));
         let mut panel = 0.0;
         for (x, w) in nodes.iter().zip(weights) {
@@ -160,24 +168,38 @@ fn integrate_g(a: f64, width: f64) -> f64 {
     total
 }
 
-/// `ln b(x, s)` for `x < 0` by the stable representation. Valid for every
-/// finite `x < 0` and `s > 0`; never underflows.
-fn ln_b_stable(x: f64, s: f64) -> f64 {
+/// `ln b(x, s)` for `x < 0` as the logarithm of a difference of two terms,
+/// each held in logarithms. Used when the terms differ by a modest factor;
+/// `None` if rounding makes the ratio reach 1.
+fn ln_b_logdiff(x: f64, s: f64) -> Option<f64> {
+    let u1 = -x / s - 0.5 * s;
+    let u2 = u1 + s;
+    let ln_t1 = 0.5 * x + ln_phi_neg(u1);
+    let ln_t2 = -0.5 * x + ln_phi_neg(u2);
+    let ratio = libm::exp(ln_t2 - ln_t1);
+    (ratio < 1.0).then(|| ln_t1 + libm::log1p(-ratio))
+}
+
+/// `ln b(x, s)` for `x < 0` from `ln P + ln(integral of g)`; valid everywhere.
+fn ln_b_quadrature(x: f64, s: f64) -> f64 {
     let h = x / s;
     let t = 0.5 * s;
     let u1 = -h - t;
-    let u2 = u1 + s;
-    if s >= 2.0 && u1 <= 5.0 {
-        // The two terms differ by a modest factor here, so subtract them in logs.
-        let ln_t1 = 0.5 * x + ln_phi_neg(u1);
-        let ln_t2 = -0.5 * x + ln_phi_neg(u2);
-        let ratio = libm::exp(ln_t2 - ln_t1);
-        if ratio < 1.0 {
-            return ln_t1 + libm::log1p(-ratio);
-        }
-    }
     let ln_p = -0.5 * (h * h + t * t) - LN_SQRT_2PI;
     ln_p + libm::log(integrate_g(u1, s))
+}
+
+/// `ln b(x, s)` for `x < 0` by the stable representation. Valid for every
+/// finite `x < 0` and `s > 0`; never underflows.
+fn ln_b_stable(x: f64, s: f64) -> f64 {
+    let u1 = -x / s - 0.5 * s;
+    if s >= 2.0 && u1 <= 5.0 {
+        // The two terms differ by a modest factor here, so subtract them in logs.
+        if let Some(v) = ln_b_logdiff(x, s) {
+            return v;
+        }
+    }
+    ln_b_quadrature(x, s)
 }
 
 /// The plain formula, with an error estimate; `None` when it is not trusted
@@ -353,5 +375,71 @@ mod tests {
             let v = ln_normalised_vega(x, s).exp();
             assert!((fd - v).abs() / v < 1e-7, "x={x} s={s}: {fd} vs {v}");
         }
+    }
+
+    #[test]
+    fn quadrature_has_converged_at_the_default_resolution() {
+        let mut rng = crate::mc::Rng::new(77);
+        for _ in 0..4000 {
+            let a = if rng.next_f64() < 0.3 {
+                -1.0 + 2.0 * rng.next_f64()
+            } else {
+                libm::exp(rng.next_f64() * 9.0)
+            };
+            let width = libm::exp(-20.0 + 24.0 * rng.next_f64());
+            let (one, eight) = (
+                integrate_g_with(a, width, 1.0),
+                integrate_g_with(a, width, 8.0),
+            );
+            assert!(
+                (one - eight).abs() <= 3e-14 * eight.abs(),
+                "a={a} width={width}: {one} vs {eight}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_two_stable_branches_agree_across_their_switch() {
+        for &s in &[1.5, 1.9999999, 2.0, 2.0000001, 3.0, 4.0] {
+            for &u1 in &[-1.0, -0.5, 0.0, 1.0, 3.0, 4.9999, 5.0, 5.0001, 8.0, 12.0] {
+                let x = -s * (u1 + 0.5 * s);
+                if x >= 0.0 {
+                    continue;
+                }
+                let direct = ln_b_logdiff(x, s).expect("ratio below one for s >= 1.5");
+                let quad = ln_b_quadrature(x, s);
+                // Both branches round h = x / s, so they can differ by the same
+                // eps * h^2 that limits any double-precision evaluation.
+                let h = x / s;
+                let tol = 8.0 * f64::EPSILON * (1.0 + h * h) + 5e-14;
+                assert!(
+                    (direct - quad).abs() < tol,
+                    "s={s} u1={u1}: {direct} vs {quad}"
+                );
+            }
+        }
+    }
+
+    /// Wherever the fast formula is trusted it must agree with the stable
+    /// evaluation to within its advertised error (about FAST_LIMIT * eps).
+    #[test]
+    fn fast_path_agrees_with_the_stable_path_wherever_it_is_used() {
+        let mut rng = crate::mc::Rng::new(5);
+        let (mut used, mut total) = (0, 0);
+        for _ in 0..30000 {
+            let x = -libm::exp(-12.0 + 14.0 * rng.next_f64());
+            let s = libm::exp(-6.0 + 8.0 * rng.next_f64());
+            total += 1;
+            if let Some(b) = b_fast(x, s) {
+                used += 1;
+                let stable = ln_b_stable(x, s);
+                assert!(
+                    (libm::log(b) - stable).abs() <= 5e-14,
+                    "x={x:e} s={s:e}: fast ln b {} vs stable {stable}",
+                    libm::log(b)
+                );
+            }
+        }
+        assert!(used > total / 20 && used < total, "{used} of {total}");
     }
 }

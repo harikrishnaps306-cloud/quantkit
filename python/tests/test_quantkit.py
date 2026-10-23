@@ -73,9 +73,12 @@ def test_mc_golden_value_is_stable_across_python_and_rust():
 
 def test_mc_american_detailed_separates_training_and_evaluation():
     d = qk.mc_american_detailed(36, 40, 0.06, 0.2, 1.0, steps=25, train_paths=4000, eval_paths=4000)
-    assert d["train_samples"] == 4000 and d["eval_samples"] == 2000  # antithetic pairs count once
-    assert d["fitted_dates"] > 0 and d["std_error"] > 0
-    assert d["in_sample_price"] != d["price"]
+    assert (d["train_paths"], d["train_samples"]) == (4000, 2000)  # antithetic pairs count once
+    assert (d["eval_paths"], d["eval_samples"]) == (4000, 2000)
+    assert d["fitted_dates"] > 0 and d["std_error"] > 0 and d["exercise_now"] is False
+    assert d["in_sample_price"] != d["continuation_value"]
+    with pytest.raises(qk.QuantError):  # two antithetic paths are one observation
+        qk.mc_american_detailed(36, 40, 0.06, 0.2, 1.0, steps=2, train_paths=2, eval_paths=100)
     d2 = qk.mc_american_detailed(36, 40, 0.06, 0.2, 1.0, steps=25, train_paths=4000, eval_paths=4000)
     assert d == d2
 
@@ -141,6 +144,7 @@ def test_detailed_implied_vol_has_diagnostics_and_distinct_failure_kinds():
     st = d["status"]
     assert st[0] == qk.STATUS["Ok"] and d["vol"][0] == pytest.approx(0.25, abs=1e-8)
     assert d["residual"][0] <= 1e-9 and d["vega"][0] > 0 and d["iterations"][0] >= d["newton_steps"][0]
+    assert d["elasticity"][0] > 0 and np.isnan(d["elasticity"][1])
     assert st[1] == qk.STATUS["PriceOutOfBounds"]
     assert st[2] == qk.STATUS["NonFinite"]
     # A far out-of-the-money price of 1e-300 is solved in the log domain.
@@ -211,7 +215,7 @@ def test_make_dataset_is_reproducible_and_audited():
     assert price == pytest.approx(cols["price"][i], abs=1e-12)
     # Same checksum as the Rust regression-lock test.
     locked = qk.make_dataset(rows=200, seed=123)
-    assert locked["metadata"]["checksum"] == 6627530182418969352
+    assert locked["metadata"]["checksum"] == 1013679137848296004
     with pytest.raises(qk.QuantError):
         qk.make_dataset(rows=10, volatility=(1e-12, 1.0))
 
@@ -223,3 +227,12 @@ def test_thread_pool_setting():
         qk.set_num_threads(4)
     except RuntimeError:
         pass  # pool was already initialised by an earlier parallel call
+
+
+def test_mc_european_survives_overflowing_terminal_prices():
+    # r=10, q=-10, T=50: terminal prices ~ e^1000 overflow, discounted prices do not.
+    price, se = qk.mc_european(100, 100, 10.0, 0.2, 50.0, div_yield=-10.0, paths=100, seed=1)
+    exact = qk.bs_price(100, 100, 10.0, 0.2, 50.0, True, -10.0)
+    assert np.isfinite(price) and np.isfinite(se) and abs(price - exact) < 4 * se
+    d = qk.mc_european_detailed(100.0, 100.0, 10.0, 0.2, 50.0, div_yield=-10.0, paths=100, seed=1)
+    assert d["status"] == qk.STATUS["Ok"] and np.isfinite(d["price"])

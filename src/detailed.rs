@@ -165,7 +165,13 @@ where
         let mut st = Vec::with_capacity(end - start);
         let mut errs = Vec::new();
         for i in start..end {
-            match f(i) {
+            match f(i).and_then(|v| {
+                if v.iter().all(|x| x.is_finite()) {
+                    Ok(v)
+                } else {
+                    Err(QuantError::NonFinite { name: "result" })
+                }
+            }) {
                 Ok(v) => {
                     vals.push(v);
                     st.push(StatusCode::Ok);
@@ -302,17 +308,26 @@ pub struct PriceRow {
 /// assert!(rows[1].price.is_nan());
 /// ```
 pub fn price(rows: &[RawOption], kind: OptionType) -> Vec<PriceRow> {
-    map(rows, |r| match r.validate() {
-        Ok(p) => PriceRow {
-            status: StatusCode::Ok,
-            error: None,
-            price: crate::bsm::price(&p, kind),
-        },
-        Err(e) => PriceRow {
-            status: e.status_code(),
-            error: Some(e),
-            price: f64::NAN,
-        },
+    map(rows, |r| {
+        match r.validate().and_then(|p| {
+            let v = crate::bsm::price(&p, kind);
+            if v.is_finite() {
+                Ok(v)
+            } else {
+                Err(QuantError::NonFinite { name: "price" })
+            }
+        }) {
+            Ok(price) => PriceRow {
+                status: StatusCode::Ok,
+                error: None,
+                price,
+            },
+            Err(e) => PriceRow {
+                status: e.status_code(),
+                error: Some(e),
+                price: f64::NAN,
+            },
+        }
     })
 }
 
@@ -346,17 +361,29 @@ pub fn greeks(rows: &[RawOption], kind: OptionType) -> Vec<GreeksRow> {
         theta: f64::NAN,
         rho: f64::NAN,
     };
-    map(rows, |r| match r.validate() {
-        Ok(p) => GreeksRow {
-            status: StatusCode::Ok,
-            error: None,
-            greeks: greeks::analytic(&p, kind),
-        },
-        Err(e) => GreeksRow {
-            status: e.status_code(),
-            error: Some(e),
-            greeks: nan,
-        },
+    map(rows, |r| {
+        match r.validate().and_then(|p| {
+            let g = greeks::analytic(&p, kind);
+            if [g.delta, g.gamma, g.vega, g.theta, g.rho]
+                .iter()
+                .all(|x| x.is_finite())
+            {
+                Ok(g)
+            } else {
+                Err(QuantError::NonFinite { name: "greeks" })
+            }
+        }) {
+            Ok(greeks) => GreeksRow {
+                status: StatusCode::Ok,
+                error: None,
+                greeks,
+            },
+            Err(e) => GreeksRow {
+                status: e.status_code(),
+                error: Some(e),
+                greeks: nan,
+            },
+        }
     })
 }
 
@@ -377,8 +404,11 @@ pub struct IvRow {
     pub iterations: usize,
     /// How many steps were Newton steps (`0` on failure).
     pub newton_steps: usize,
-    /// BSM vega at `vol`, a conditioning indicator (`NaN` on failure).
+    /// BSM vega at `vol` (`NaN` on failure). May underflow to `0.0`.
     pub vega: f64,
+    /// Conditioning: `d ln price / d ln vol` (`NaN` on failure); see
+    /// [`crate::implied_vol::IvSolution::elasticity`].
+    pub elasticity: f64,
 }
 
 /// Implied volatilities with solver diagnostics for every row.
@@ -413,6 +443,7 @@ pub fn implied_vol(rows: &[RawQuote], kind: OptionType, config: SolverConfig) ->
                 iterations,
                 newton_steps: 0,
                 vega: f64::NAN,
+                elasticity: f64::NAN,
             }
         };
         let contract = match q.validate() {
@@ -428,6 +459,7 @@ pub fn implied_vol(rows: &[RawQuote], kind: OptionType, config: SolverConfig) ->
                 iterations: s.iterations,
                 newton_steps: s.newton_steps,
                 vega: s.vega,
+                elasticity: s.elasticity,
             },
             Err(e) => fail(e),
         }

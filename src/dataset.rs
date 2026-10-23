@@ -668,7 +668,7 @@ mod tests {
             ds.metadata.checksum
         );
     }
-    const GOLDEN_CHECKSUM: u64 = 6627530182418969352;
+    const GOLDEN_CHECKSUM: u64 = 1013679137848296004;
 
     #[test]
     fn counts_and_invariants() {

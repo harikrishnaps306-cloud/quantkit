@@ -15,21 +15,28 @@
 //!
 //! # Reproducibility guarantee
 //!
-//! Results are a pure function of `(inputs, paths, seed, antithetic, steps)`
-//! and the crate version. They do **not** depend on the number of threads (the
-//! `parallel` feature changes speed only: work is split into fixed-size
-//! blocks, each with its own random stream derived from the seed and the block
-//! index, and block statistics are merged in block order) and they are
-//! bitwise reproducible across platforms, because the random-number code uses
-//! only IEEE-exact operations and the pure-Rust `libm` transcendental
-//! functions rather than the platform's C library. Changing the crate version
-//! may change the numbers.
+//! Results are a pure function of `(inputs, paths, seed, antithetic, steps)`,
+//! the crate version and the versions of the compiler and of the `libm`
+//! dependency. They do **not** depend on the number of threads (the `parallel`
+//! feature changes speed only: work is split into fixed-size blocks, each with
+//! its own random stream derived from the seed and the block index, and block
+//! statistics are merged in block order).
+//!
+//! The code is written to avoid platform dependence (IEEE-exact operations and
+//! the pure-Rust `libm` instead of the platform's C library), but that is a
+//! design, not a proof. What has actually been checked is listed in
+//! `docs/NUMERICS.md`: identical bits on `x86_64-pc-windows-msvc` with two Rust
+//! compilers and one `libm` version. Other targets are covered only by CI that
+//! is configured but has not been run. A new `libm` or compiler release could
+//! change low-order bits, so treat the golden values in the tests as regression
+//! locks for a pinned toolchain, not as a guarantee for all future builds.
 //!
 //! # What the error bars mean
 //!
 //! * `std_error` is the **sampling** standard error of the reported mean:
 //!   the usual `s / sqrt(n)` over independent samples (antithetic pairs are
-//!   averaged first and count as one sample). A confidence interval built from
+//!   averaged first and count as one sample, so at least two samples, i.e. two
+//!   paths or four antithetic paths, are required). A confidence interval built from
 //!   it assumes the central limit theorem applies, which is accurate for
 //!   thousands of paths but not for very few paths or extremely deep
 //!   out-of-the-money payoffs.
@@ -68,6 +75,12 @@ pub struct Rng {
     spare: Option<f64>,
 }
 
+/// Maps a raw 64-bit word to a double in the open interval `(0, 1)`; see
+/// [`Rng::next_f64`] for the grid.
+fn u64_to_open_unit(raw: u64) -> f64 {
+    ((raw >> 12) as f64 + 0.5) * (1.0 / 4_503_599_627_370_496.0)
+}
+
 fn splitmix64(state: &mut u64) -> u64 {
     *state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
     let mut z = *state;
@@ -93,10 +106,22 @@ impl Rng {
 
     /// A generator for parallel stream number `stream` derived from `seed`.
     ///
-    /// Different `(seed, stream)` pairs give streams seeded from independently
-    /// hashed 64-bit values. This makes overlaps astronomically unlikely in
-    /// practice, but unlike a jump-ahead construction it does not *prove*
-    /// that the streams are disjoint.
+    /// Three different things must not be confused:
+    ///
+    /// * **Distinct stream identifiers** are a property of the caller's
+    ///   labels.
+    /// * **Distinct initial states** are what this function provides in
+    ///   practice: `(seed, stream)` is hashed to a 64-bit seed that is expanded
+    ///   to the four-word state. Two different pairs can in principle hash to
+    ///   the same seed (about a `2^-64` chance per pair), and the hash is not
+    ///   known to be injective.
+    /// * **Non-overlapping sequences** are *not* guaranteed: xoshiro256++ has
+    ///   period `2^256 - 1`, so overlap between two random starting points is
+    ///   astronomically unlikely, but nothing here proves it cannot happen (a
+    ///   jump-ahead construction would).
+    ///
+    /// **Statistical independence** of the streams is a modelling assumption
+    /// that standard tests do not contradict; it is not proved.
     ///
     /// # Examples
     ///
@@ -110,6 +135,21 @@ impl Rng {
         let mut a = seed;
         let mut b = stream ^ 0xA076_1D64_78BD_642F;
         Self::new(splitmix64(&mut a) ^ splitmix64(&mut b).rotate_left(32))
+    }
+
+    /// Creates a generator directly from its four state words, for testing
+    /// against published reference vectors.
+    ///
+    /// The all-zero state is invalid for xoshiro (it would output zeros
+    /// forever); it is replaced by the state of `Rng::new(0)`.
+    pub fn from_state(state: [u64; 4]) -> Self {
+        if state == [0; 4] {
+            return Self::new(0);
+        }
+        Self {
+            s: state,
+            spare: None,
+        }
     }
 
     /// Next raw 64-bit output.
@@ -126,10 +166,16 @@ impl Rng {
         result
     }
 
-    /// Uniform sample in the open interval `(0, 1)`.
+    /// Uniform sample in the **open** interval `(0, 1)`.
+    ///
+    /// The top 52 bits of a draw select one of `2^52` equally spaced
+    /// midpoints `(k + 1/2) / 2^52`, so the smallest possible value is `2^-53`
+    /// and the largest is `1 - 2^-53`; both are exactly representable, and
+    /// neither endpoint can occur. (The discretisation is 52 bits, one less
+    /// than the 53 an `f64` can hold in `[0.5, 1)`, because a 53-bit midpoint
+    /// grid would round up to exactly `1.0` at its top end.)
     pub fn next_f64(&mut self) -> f64 {
-        // 53 random bits, shifted by half a step so 0 and 1 are excluded.
-        ((self.next_u64() >> 11) as f64 + 0.5) * (1.0 / 9_007_199_254_740_992.0)
+        u64_to_open_unit(self.next_u64())
     }
 
     /// Standard normal sample (Box-Muller; produces samples in pairs).
@@ -228,8 +274,10 @@ const MAX_LSM_CELLS: usize = 100_000_000;
 const MAX_PATHS: u64 = 10_000_000_000;
 /// Samples per independent random-number block.
 const BLOCK: usize = 4096;
-/// Stream-id domain for LSM training paths and evaluation blocks, so the two
-/// sets of paths never share a stream even if both configs carry the same seed.
+/// Stream-identifier domains for LSM training paths and evaluation blocks. They
+/// are different identifiers, so the two sets of paths start from different
+/// states even if both configs carry the same seed (see [`Rng::for_stream`]
+/// for what that does and does not guarantee).
 const TRAIN_STREAM: u64 = 1 << 62;
 const EVAL_STREAM: u64 = 2 << 62;
 
@@ -343,21 +391,26 @@ fn blocked<F: Fn(u64, usize) -> Stats + Sync + Send>(samples: usize, f: F) -> St
 pub fn european(p: &OptionParams, kind: OptionType, cfg: McConfig) -> Result<McResult> {
     check_config(&cfg)?;
     let t = p.expiry();
-    let drift = (p.rate() - p.dividend_yield() - 0.5 * p.volatility() * p.volatility()) * t;
-    let diffusion = p.volatility() * t.sqrt();
-    let disc = libm::exp(-p.rate() * t);
-    let (spot, strike) = (p.spot(), p.strike());
-    let terminal = |z: f64| spot * libm::exp(drift + diffusion * z);
+    let sig_sqrt_t = p.volatility() * t.sqrt();
+    // Everything is done in *discounted* units, divided by a common scale `c`:
+    //   Y = S_T e^{-rT} = S e^{-qT} exp(-sigma^2 T / 2 + sigma sqrt(T) z),
+    //   strike' = K e^{-rT}.
+    // Simulating S_T directly overflows for large (r - q) T even when the
+    // discounted quantities are modest. Dividing by `c` keeps the simulated
+    // values O(1) and the variance accumulator far from overflow; the result is
+    // multiplied back at the end and rejected if it cannot be represented.
+    let ln_spot_disc = libm::log(p.spot()) - p.dividend_yield() * t;
+    let ln_strike_disc = libm::log(p.strike()) - p.rate() * t;
+    let ln_c = ln_spot_disc.max(ln_strike_disc);
+    let ln_y0 = ln_spot_disc - 0.5 * p.volatility() * p.volatility() * t - ln_c;
+    let strike_n = libm::exp(ln_strike_disc - ln_c);
+    let terminal = |z: f64| libm::exp(ln_y0 + sig_sqrt_t * z);
 
-    let samples = if cfg.antithetic {
-        cfg.paths / 2
-    } else {
-        cfg.paths
-    };
+    let samples = effective_samples(&cfg);
     if samples < 2 {
         return Err(QuantError::InvalidInput {
             name: "paths",
-            reason: "too few paths for antithetic sampling",
+            reason: "need at least 2 independent observations (an antithetic pair counts once, so antithetic sampling needs at least 4 paths)",
         });
     }
     let stats = blocked(samples, |block, count| {
@@ -367,19 +420,24 @@ pub fn european(p: &OptionParams, kind: OptionType, cfg: McConfig) -> Result<McR
             let z = rng.next_normal();
             if cfg.antithetic {
                 st.add(
-                    0.5 * (payoff(kind, terminal(z), strike) + payoff(kind, terminal(-z), strike)),
+                    0.5 * (payoff(kind, terminal(z), strike_n)
+                        + payoff(kind, terminal(-z), strike_n)),
                 );
             } else {
-                st.add(payoff(kind, terminal(z), strike));
+                st.add(payoff(kind, terminal(z), strike_n));
             }
         }
         st
     });
     let (mean, se) = stats.mean_and_se();
-    Ok(McResult {
-        price: disc * mean,
-        std_error: disc * se,
-    })
+    let scale = libm::exp(ln_c);
+    let (price, std_error) = (mean * scale, se * scale);
+    if !(price.is_finite() && std_error.is_finite()) {
+        return Err(QuantError::NonFinite {
+            name: "monte carlo result",
+        });
+    }
+    Ok(McResult { price, std_error })
 }
 
 /// Regression of the continuation value at one exercise date, on the
@@ -400,6 +458,45 @@ impl StepFit {
 
 /// Result of [`american_lsm_detailed`].
 ///
+/// # Which numbers estimate what
+///
+/// The method first **trains** an exercise policy on one set of paths: the
+/// regressions at the interior dates, and a decision at time zero
+/// (`exercise_now`, taken when the immediate payoff exceeds the training
+/// paths' estimate of the continuation value). Both decisions are fixed
+/// before any evaluation path is drawn. The policy is then **evaluated** on
+/// independent paths.
+///
+/// * [`price`](Self::price) / [`std_error`](Self::std_error) describe the fixed
+///   trained policy: the immediate payoff (standard error `0`) if
+///   `exercise_now`, otherwise the evaluation-path mean of discounted cash
+///   flows. Conditional on the trained policy, the evaluation mean is an
+///   unbiased estimate of that policy's value, and a feasible stopping rule
+///   can be worth no more than the optimal Bermudan value, so in expectation
+///   over the evaluation sample `price` does not exceed the Bermudan value
+///   (it is not guaranteed to be close to it).
+/// * `std_error` is the **sampling** error of the evaluation mean *given* the
+///   trained policy. It does not include the variation of the policy across
+///   training samples, the gap between the learned and the optimal policy, the
+///   restriction to `steps` exercise dates (a Bermudan value is below the
+///   American value), or model error, so intervals built from it do not cover
+///   those.
+/// * [`continuation_value`](Self::continuation_value) is the raw
+///   evaluation-path mean of the policy that never exercises at time zero,
+///   reported even when `exercise_now`.
+/// * [`in_sample_price`](Self::in_sample_price) is the same continuation
+///   value measured on the training paths the regressions were fitted to. The
+///   fitting tends to make that number optimistic; it is a diagnostic only
+///   (compare it with `continuation_value`) and is not an estimate with a
+///   valid error bar.
+///
+/// # Counts
+///
+/// `train_paths` and `eval_paths` count simulated paths. `train_samples` and
+/// `eval_samples` count the **independent observations** the standard errors
+/// are computed from: an antithetic pair is averaged first and counts once.
+/// Both must be at least two.
+///
 /// # Examples
 ///
 /// ```
@@ -408,28 +505,38 @@ impl StepFit {
 /// let cfg = mc::McConfig { paths: 5_000, seed: 3, antithetic: true };
 /// let r = mc::american_lsm_detailed(&p, OptionType::Put, 25, cfg, cfg)?;
 /// assert!(r.fitted_dates > 0 && r.std_error > 0.0);
+/// assert_eq!(r.train_samples, 2_500); // antithetic pairs
 /// # Ok::<(), quantkit::QuantError>(())
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct LsmResult {
-    /// Price estimate from the **independent evaluation paths**, floored at
-    /// the immediate-exercise value. Because the exercise rule is learned
-    /// rather than optimal, this is biased slightly **low** relative to the
-    /// Bermudan value (and the Bermudan value is below the American value).
+    /// Value estimate of the fixed trained policy (see the type docs).
     pub price: f64,
-    /// Sampling standard error of the out-of-sample mean (before flooring).
-    /// It excludes policy, discretisation and model error.
+    /// Sampling standard error of `price` given the trained policy; `0` when
+    /// `exercise_now`.
     pub std_error: f64,
-    /// Price estimated on the training paths themselves. This is biased high
-    /// by overfitting the regression to those paths; the gap to `price` is a
-    /// diagnostic of how noisy the learned policy is.
+    /// Whether the trained policy exercises immediately (decided from the
+    /// training paths only).
+    pub exercise_now: bool,
+    /// The immediate-exercise payoff, `max(S - K, 0)` or `max(K - S, 0)`.
+    pub immediate_exercise_value: f64,
+    /// Raw evaluation-path mean of the policy that does not exercise at time
+    /// zero.
+    pub continuation_value: f64,
+    /// Sampling standard error of `continuation_value`.
+    pub continuation_std_error: f64,
+    /// Continuation value measured on the training paths (optimistic).
     pub in_sample_price: f64,
-    /// Standard error of the in-sample mean.
+    /// Standard error of the in-sample mean over its independent observations.
     pub in_sample_std_error: f64,
-    /// Training paths used.
+    /// Simulated training paths.
+    pub train_paths: usize,
+    /// Independent training observations (antithetic pairs count once).
     pub train_samples: usize,
-    /// Independent evaluation samples used (antithetic pairs count once).
+    /// Simulated evaluation paths.
+    pub eval_paths: usize,
+    /// Independent evaluation observations (antithetic pairs count once).
     pub eval_samples: usize,
     /// Interior exercise dates with a usable regression. Dates without one
     /// are treated as "never exercise early".
@@ -439,14 +546,30 @@ pub struct LsmResult {
     pub regression_failures: usize,
 }
 
+impl LsmResult {
+    /// `max(price, immediate_exercise_value)`, a convenient lower-bounded
+    /// number for display.
+    ///
+    /// This is **not** a statistical estimate: taking a maximum after the
+    /// fact is optimistically biased relative to `price`, and `std_error`
+    /// does not describe it. Use [`price`](Self::price) for inference.
+    pub fn floored_price(&self) -> f64 {
+        self.price.max(self.immediate_exercise_value)
+    }
+}
+
 /// Longstaff-Schwartz price with the exercise policy trained on `cfg` paths
-/// and evaluated on independent paths of the same count. Returns the
-/// out-of-sample estimate. See [`american_lsm_detailed`] for diagnostics.
+/// and evaluated on independent paths of the same count. Returns the value of
+/// the fixed trained policy and its conditional sampling standard error; see
+/// [`LsmResult`] and [`american_lsm_detailed`] for exactly what that means.
 ///
 /// # Errors
 ///
-/// [`QuantError::InvalidInput`] if `paths < 2`, `steps == 0`, or
-/// `paths * steps` exceeds 100 million (training paths are held in memory).
+/// [`QuantError::InvalidInput`] if either set of paths yields fewer than two
+/// independent observations (`paths < 2`, or `paths < 4` with antithetic
+/// sampling), `steps == 0`, or `paths * steps` exceeds 100 million (training
+/// paths are held in memory); [`QuantError::NonFinite`] if simulated prices or
+/// the result overflow.
 ///
 /// # Examples
 ///
@@ -474,24 +597,40 @@ pub fn american_lsm(
     })
 }
 
+/// Number of independent observations a configuration yields: antithetic
+/// pairs count once.
+fn effective_samples(cfg: &McConfig) -> usize {
+    if cfg.antithetic {
+        cfg.paths / 2
+    } else {
+        cfg.paths
+    }
+}
+
 /// Longstaff-Schwartz with separate training and evaluation configurations.
 ///
 /// 1. **Train**: simulate `train.paths` paths (stored in memory), and
 ///    backward-induct, regressing discounted continuation cash flows of
-///    in-the-money paths on `1, z, z^2` at each interior date.
+///    in-the-money paths on `1, z, z^2` at each interior date. The time-zero
+///    decision is taken here too: exercise immediately if the immediate payoff
+///    exceeds the training paths' continuation estimate.
 /// 2. **Evaluate**: simulate `eval.paths` *fresh* paths from random streams
-///    that are disjoint by construction from the training stream (even when
-///    `train.seed == eval.seed`), apply the learned policy, and average
-///    discounted payoffs. Evaluation is streamed, so it needs no path storage.
+///    with distinct stream identifiers (see [`Rng::for_stream`]; this makes
+///    reuse of the training stream extremely unlikely but is not a proof of
+///    non-overlap), apply the fixed policy, and average discounted payoffs.
+///    Evaluation is streamed, so it needs no path storage.
 ///
-/// The out-of-sample price is a (low-biased) valid estimate of the value of a
-/// feasible stopping rule; the in-sample price reuses the regression's own
-/// paths and is reported for comparison only.
+/// See [`LsmResult`] for which field estimates what, what the standard errors
+/// condition on, and which sources of error they exclude.
 ///
 /// # Errors
 ///
-/// [`QuantError::InvalidInput`] if either config has `paths < 2` or too many,
-/// `steps == 0`, or `train.paths * steps` exceeds 100 million.
+/// [`QuantError::InvalidInput`] if either config yields fewer than two
+/// independent observations (`paths < 2`; `paths < 4` with antithetic
+/// sampling, because a pair is one observation), too many paths, `steps == 0`,
+/// or `train.paths * steps` above 100 million; [`QuantError::NonFinite`] if a
+/// simulated price or the result is not finite (for example, parameters whose
+/// simulated prices exceed the range of `f64`).
 ///
 /// # Examples
 ///
@@ -522,7 +661,20 @@ pub fn american_lsm_detailed(
             reason: "must be at least 1",
         });
     }
-    match train.paths.checked_mul(steps) {
+    let train_obs = effective_samples(&train);
+    let eval_obs = effective_samples(&eval);
+    if train_obs < 2 || eval_obs < 2 {
+        return Err(QuantError::InvalidInput {
+            name: "paths",
+            reason: "need at least 2 independent observations for a standard error (an antithetic pair counts once, so antithetic sampling needs at least 4 paths)",
+        });
+    }
+    let n = if train.antithetic {
+        train.paths & !1
+    } else {
+        train.paths
+    };
+    match n.checked_mul(steps) {
         Some(cells) if cells <= MAX_LSM_CELLS => {}
         _ => {
             return Err(QuantError::InvalidInput {
@@ -540,19 +692,9 @@ pub fn american_lsm_detailed(
     let disc_pow: Vec<f64> = (0..=steps)
         .map(|t| libm::exp(-p.rate() * dt * t as f64))
         .collect();
+    let not_finite = |name| QuantError::NonFinite { name };
 
     // ---- Training -------------------------------------------------------
-    let n = if train.antithetic {
-        train.paths & !1
-    } else {
-        train.paths
-    };
-    if n < 2 {
-        return Err(QuantError::InvalidInput {
-            name: "paths",
-            reason: "too few paths for antithetic sampling",
-        });
-    }
     let mut rng = Rng::for_stream(train.seed, TRAIN_STREAM);
     let mut s = vec![0.0; n * steps];
     let mut i = 0;
@@ -568,6 +710,9 @@ pub fn american_lsm_detailed(
             }
         }
         i += if train.antithetic { 2 } else { 1 };
+    }
+    if s.iter().any(|v| !v.is_finite()) {
+        return Err(not_finite("simulated price"));
     }
 
     let mut cash: Vec<f64> = (0..n)
@@ -588,7 +733,7 @@ pub fn american_lsm_detailed(
         let mean = xs.iter().sum::<f64>() / xs.len() as f64;
         let var = xs.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / xs.len() as f64;
         let scale = var.sqrt();
-        let usable = itm.len() >= 10 && scale > 1e-12;
+        let usable = itm.len() >= 10 && scale > 1e-12 && scale.is_finite();
         let mut fit = None;
         if usable {
             let (mut a, mut b) = ([[0.0; 3]; 3], [0.0; 3]);
@@ -603,7 +748,9 @@ pub fn american_lsm_detailed(
                     }
                 }
             }
-            fit = solve3(a, b).map(|coef| StepFit { mean, scale, coef });
+            fit = solve3(a, b)
+                .map(|coef| StepFit { mean, scale, coef })
+                .filter(|f| f.coef.iter().all(|c| c.is_finite()));
         }
         let Some(fit) = fit else {
             regression_failures += 1;
@@ -632,18 +779,11 @@ pub fn american_lsm_detailed(
     let (in_mean, in_se) = in_sample.mean_and_se();
     drop(s);
 
-    // ---- Evaluation on independent paths ---------------------------------
-    let eval_samples = if eval.antithetic {
-        eval.paths / 2
-    } else {
-        eval.paths
-    };
-    if eval_samples < 2 {
-        return Err(QuantError::InvalidInput {
-            name: "paths",
-            reason: "too few paths for antithetic sampling",
-        });
-    }
+    // The time-zero decision uses training information only.
+    let immediate = payoff(kind, p.spot(), k);
+    let exercise_now = immediate > in_mean;
+
+    // ---- Evaluation of the fixed policy on independent paths -------------
     let spot = p.spot();
     let policy_ref = &policy;
     let disc_ref = &disc_pow;
@@ -666,7 +806,7 @@ pub fn american_lsm_detailed(
         }
         0.0
     };
-    let evaluated = blocked(eval_samples, |block, count| {
+    let evaluated = blocked(eval_obs, |block, count| {
         let mut rng = Rng::for_stream(eval.seed, EVAL_STREAM + block);
         let mut zs = vec![0.0; steps];
         let mut st = Stats::default();
@@ -684,13 +824,35 @@ pub fn american_lsm_detailed(
     });
     let (out_mean, out_se) = evaluated.mean_and_se();
 
+    let (price, std_error) = if exercise_now {
+        (immediate, 0.0)
+    } else {
+        (out_mean, out_se)
+    };
+    let all = [
+        price, std_error, immediate, out_mean, out_se, in_mean, in_se,
+    ];
+    if all.iter().any(|v| !v.is_finite()) {
+        return Err(not_finite("monte carlo result"));
+    }
+
     Ok(LsmResult {
-        price: out_mean.max(payoff(kind, p.spot(), k)),
-        std_error: out_se,
+        price,
+        std_error,
+        exercise_now,
+        immediate_exercise_value: immediate,
+        continuation_value: out_mean,
+        continuation_std_error: out_se,
         in_sample_price: in_mean,
         in_sample_std_error: in_se,
-        train_samples: n,
-        eval_samples,
+        train_paths: n,
+        train_samples: train_obs,
+        eval_paths: if eval.antithetic {
+            eval_obs * 2
+        } else {
+            eval_obs
+        },
+        eval_samples: eval_obs,
         fitted_dates,
         regression_failures,
     })
@@ -714,6 +876,74 @@ mod tests {
             .unwrap()
     }
 
+    // ---- PRNG reference vectors (separate from the statistical checks) -----
+
+    /// xoshiro256++ with state words 1, 2, 3, 4. These ten outputs appear as the
+    /// `reference` test of the `rand_xoshiro` crate, which states they were
+    /// "produced with the reference implementation"
+    /// (xoshiro.di.unimi.it/xoshiro256plusplus.c); the source was read on
+    /// 2026-10-23. They also match an independent pure-Python implementation of
+    /// the published algorithm (`benchmarks/prng_check.py`).
+    #[test]
+    fn xoshiro256pp_matches_published_reference_vector() {
+        let mut rng = Rng::from_state([1, 2, 3, 4]);
+        let expected: [u64; 10] = [
+            41943041,
+            58720359,
+            3588806011781223,
+            3591011842654386,
+            9228616714210784205,
+            9973669472204895162,
+            14011001112246962877,
+            12406186145184390807,
+            15849039046786891736,
+            10450023813501588000,
+        ];
+        for (i, want) in expected.into_iter().enumerate() {
+            assert_eq!(rng.next_u64(), want, "output {i}");
+        }
+    }
+
+    /// splitmix64 from seed 1234567. The values match an independent pure-Python
+    /// implementation of the published algorithm; they are also the values used
+    /// in `rand_xoshiro`'s `SplitMix64` test, but that source was not re-read.
+    #[test]
+    fn splitmix64_matches_reference_vector() {
+        let mut state = 1234567_u64;
+        let expected: [u64; 5] = [
+            6457827717110365317,
+            3203168211198807973,
+            9817491932198370423,
+            4593380528125082431,
+            16408922859458223821,
+        ];
+        for (i, want) in expected.into_iter().enumerate() {
+            assert_eq!(splitmix64(&mut state), want, "output {i}");
+        }
+    }
+
+    #[test]
+    fn unit_interval_mapping_is_strictly_open_at_both_ends() {
+        let lo = u64_to_open_unit(0);
+        let hi = u64_to_open_unit(u64::MAX);
+        assert!(lo > 0.0 && lo == 0.5 * 2f64.powi(-52), "raw 0 maps to {lo}");
+        assert!(
+            hi < 1.0 && hi == 1.0 - 0.5 * 2f64.powi(-52),
+            "raw MAX maps to {hi}"
+        );
+        // The 12 discarded low bits do not affect the result.
+        assert_eq!(u64_to_open_unit(0xFFF), lo);
+        // Monotone in the top 52 bits, with the documented grid spacing 2^-52.
+        let a = u64_to_open_unit(1 << 12);
+        assert_eq!(a - lo, 2f64.powi(-52));
+        // Neither endpoint can reach the Box-Muller logarithm as 0 or 1.
+        for raw in [0, 1, u64::MAX - 1, u64::MAX, 1 << 63] {
+            let u = u64_to_open_unit(raw);
+            assert!(u > 0.0 && u < 1.0, "raw {raw}: {u}");
+            assert!(libm::log(u).is_finite() && libm::log(u) < 0.0);
+        }
+    }
+
     #[test]
     fn rng_is_deterministic_and_seed_sensitive() {
         let mut a = Rng::new(1);
@@ -726,10 +956,11 @@ mod tests {
         assert_ne!(xa, xc);
     }
 
+    /// Evidence, not proof: 64 streams x 2000 outputs share no 64-bit value (a
+    /// chance duplicate has probability around 1e-11). This does not establish
+    /// that the sequences cannot overlap.
     #[test]
-    fn streams_do_not_collide() {
-        // 64 streams x 2000 outputs: any duplicate 64-bit output would mean
-        // overlapping or identical streams (chance of a fluke is ~1e-11).
+    fn streams_show_no_output_collisions() {
         let mut seen = HashSet::new();
         for stream in 0..64u64 {
             let mut r = Rng::for_stream(42, stream);
@@ -740,10 +971,15 @@ mod tests {
                 );
             }
         }
-        // The train and evaluation stream domains are separate too.
-        let mut a = Rng::for_stream(7, TRAIN_STREAM);
-        let mut b = Rng::for_stream(7, EVAL_STREAM);
-        assert_ne!(a.next_u64(), b.next_u64());
+        // Distinct stream identifiers give distinct initial states, including
+        // the training/evaluation identifier domains used by Longstaff-Schwartz.
+        let mut states = HashSet::new();
+        for id in [TRAIN_STREAM, EVAL_STREAM, EVAL_STREAM + 1, 0, 1, 2] {
+            assert!(
+                states.insert(Rng::for_stream(7, id).s),
+                "identical initial state"
+            );
+        }
     }
 
     // Statistical sanity checks (not known-answer vectors).
@@ -808,10 +1044,13 @@ mod tests {
     }
 
     /// Regression lock, NOT an accuracy reference: these values were recorded
-    /// from this implementation (seed 42, 50,000 paths, antithetic). The test
-    /// fails if the random streams, block layout or merge order change, and it
-    /// must pass identically with and without the `parallel` feature, which is
-    /// how thread-count independence is checked.
+    /// from this implementation (seed 42, 50,000 paths, antithetic) after the
+    /// open-interval uniform mapping was corrected (see CHANGELOG: the
+    /// previous mapping could return exactly 1.0, so the stream of normals, and
+    /// hence this value, changed deliberately). The test fails if the random
+    /// streams, block layout, merge order or evaluation order change, and it must
+    /// pass identically with and without the `parallel` feature, which is how
+    /// thread-count independence is checked.
     #[test]
     fn european_bitwise_regression_lock() {
         let p = params(100.0, 100.0, 0.05, 0.0, 0.2, 1.0);
@@ -824,8 +1063,53 @@ mod tests {
         assert_eq!(r.price.to_bits(), GOLDEN_PRICE_BITS, "price {}", r.price);
         assert_eq!(r.std_error.to_bits(), GOLDEN_SE_BITS, "se {}", r.std_error);
     }
-    const GOLDEN_PRICE_BITS: u64 = 4622057817873776027;
-    const GOLDEN_SE_BITS: u64 = 4586848783294312776;
+    const GOLDEN_PRICE_BITS: u64 = 4622057817873776051;
+    const GOLDEN_SE_BITS: u64 = 4586848783294312790;
+
+    /// Regression for the overflow reproduction: with `r = 10`, `q = -10` and
+    /// `T = 50` the terminal asset price is about `e^1000` (beyond `f64`), but
+    /// the discounted price, about `S e^{-qT} = 1.4e219`, is representable.
+    /// The estimate must be finite and consistent with the closed form.
+    #[test]
+    fn european_survives_terminal_prices_that_overflow() {
+        let p = params(100.0, 100.0, 10.0, -10.0, 0.2, 50.0);
+        let cfg = McConfig {
+            paths: 100,
+            seed: 1,
+            antithetic: true,
+        };
+        let est = european(&p, OptionType::Call, cfg).unwrap();
+        assert!(est.price.is_finite() && est.std_error.is_finite() && est.std_error > 0.0);
+        let exact = bsm::price(&p, OptionType::Call);
+        assert!(exact.is_finite() && exact > 1e219);
+        assert!(
+            (est.price - exact).abs() < 4.0 * est.std_error,
+            "{} vs {exact} (se {})",
+            est.price,
+            est.std_error
+        );
+        // The put is worth almost nothing; it must be finite and non-negative.
+        let put = european(&p, OptionType::Put, cfg).unwrap();
+        assert!(put.price.is_finite() && put.price >= 0.0 && put.std_error.is_finite());
+    }
+
+    /// When the *result itself* cannot be represented, the answer is an
+    /// explicit error, never a `Ok` carrying `NaN` or infinity.
+    #[test]
+    fn european_reports_unrepresentable_results_as_errors() {
+        // sigma sqrt(T) ~ 3e4 makes the normalised terminal value overflow.
+        let p = params(100.0, 100.0, 0.0, 0.0, 1000.0, 1000.0);
+        let cfg = McConfig {
+            paths: 200,
+            seed: 3,
+            antithetic: true,
+        };
+        match european(&p, OptionType::Call, cfg) {
+            Err(QuantError::NonFinite { .. }) => {}
+            Ok(r) => assert!(r.price.is_finite() && r.std_error.is_finite(), "{r:?}"),
+            Err(e) => panic!("unexpected error {e}"),
+        }
+    }
 
     #[test]
     fn antithetic_reduces_error_and_seed_reproduces() {
@@ -863,6 +1147,72 @@ mod tests {
         assert!(european(&p, OptionType::Call, huge).is_err());
     }
 
+    /// Two or three antithetic paths give one pair-average, so a sample
+    /// standard error does not exist; four give two. This was the reproduction
+    /// of `in_sample_std_error = NaN`.
+    #[test]
+    fn lsm_requires_two_independent_observations() {
+        let p = params(100.0, 100.0, 0.05, 0.0, 0.2, 1.0);
+        let eval = McConfig {
+            paths: 100,
+            seed: 2,
+            antithetic: true,
+        };
+        for paths in [2, 3] {
+            let train = McConfig {
+                paths,
+                seed: 1,
+                antithetic: true,
+            };
+            assert!(
+                matches!(
+                    american_lsm_detailed(&p, OptionType::Put, 2, train, eval),
+                    Err(QuantError::InvalidInput { name: "paths", .. })
+                ),
+                "{paths} antithetic training paths"
+            );
+        }
+        let train4 = McConfig {
+            paths: 4,
+            seed: 1,
+            antithetic: true,
+        };
+        let r = american_lsm_detailed(&p, OptionType::Put, 2, train4, eval).unwrap();
+        assert_eq!((r.train_paths, r.train_samples), (4, 2));
+        assert!(r.in_sample_std_error.is_finite());
+        // The same rule applies to the evaluation sample.
+        for paths in [2, 3] {
+            let ev = McConfig { paths, ..eval };
+            assert!(american_lsm_detailed(&p, OptionType::Put, 2, train4, ev).is_err());
+        }
+        let ev4 = McConfig { paths: 4, ..eval };
+        let r = american_lsm_detailed(&p, OptionType::Put, 2, train4, ev4).unwrap();
+        assert_eq!((r.eval_paths, r.eval_samples), (4, 2));
+        // Without antithetic sampling two paths are two observations.
+        let plain = McConfig {
+            paths: 2,
+            seed: 1,
+            antithetic: false,
+        };
+        let r = american_lsm_detailed(&p, OptionType::Put, 2, plain, plain).unwrap();
+        assert!(r.in_sample_std_error.is_finite() && r.std_error.is_finite());
+        assert_eq!((r.train_paths, r.train_samples), (2, 2));
+    }
+
+    #[test]
+    fn lsm_reports_overflowing_simulations_as_errors() {
+        let p = params(100.0, 100.0, 10.0, -10.0, 0.2, 50.0);
+        let cfg = McConfig {
+            paths: 100,
+            seed: 1,
+            antithetic: true,
+        };
+        assert!(matches!(
+            american_lsm_detailed(&p, OptionType::Call, 50, cfg, cfg),
+            Err(QuantError::NonFinite { .. })
+        ));
+    }
+
     #[test]
     fn lsm_put_close_to_binomial() {
         // Longstaff-Schwartz (2001), Table 1 setting: K=40, r=6%, 50 dates/year.
@@ -881,17 +1231,20 @@ mod tests {
                 lsm.price,
                 lsm.std_error
             );
-            // Low-biased: should not sit far above the continuous-exercise value.
+            // A feasible stopping rule cannot be worth more than the optimal one,
+            // so up to sampling error it should not exceed the converged tree.
             assert!(lsm.price < tree + 4.0 * lsm.std_error);
         }
     }
 
-    /// Over many independent small samples, the in-sample estimate must
-    /// exceed the independent-path estimate (overfitting bias), and the
-    /// independent estimate must not exceed the converged tree value beyond
-    /// sampling error. Seeds are fixed, so this is deterministic.
+    /// Over many independent small samples, the in-sample continuation value
+    /// must exceed the independently evaluated one (the regressions were fitted
+    /// to the training paths), and the independently evaluated policy value must
+    /// not exceed the converged tree value beyond sampling error. Seeds are
+    /// fixed, so this is deterministic; it is evidence about this parameter set,
+    /// not a theorem about in-sample estimates.
     #[test]
-    fn lsm_in_sample_is_biased_high_and_out_of_sample_is_not() {
+    fn lsm_in_sample_is_optimistic_and_out_of_sample_is_not() {
         let p = params(36.0, 40.0, 0.06, 0.0, 0.2, 1.0);
         let tree = binomial::price(&p, OptionType::Put, ExerciseStyle::American, 3000).unwrap();
         let runs = 200u64;
@@ -908,7 +1261,7 @@ mod tests {
                 antithetic: false,
             };
             let r = american_lsm_detailed(&p, OptionType::Put, 50, train, eval).unwrap();
-            gaps.push(r.in_sample_price - r.price);
+            gaps.push(r.in_sample_price - r.continuation_value);
             outs.push(r.price);
         }
         let mean = |v: &[f64]| v.iter().sum::<f64>() / v.len() as f64;
@@ -920,7 +1273,7 @@ mod tests {
                 .sqrt()
         };
         let (gap, gap_se) = (mean(&gaps), se(&gaps));
-        assert!(gap > 3.0 * gap_se, "overfit gap {gap} +/- {gap_se}");
+        assert!(gap > 3.0 * gap_se, "optimism gap {gap} +/- {gap_se}");
         let (out, out_se) = (mean(&outs), se(&outs));
         assert!(
             out < tree + 3.0 * out_se,
@@ -938,9 +1291,97 @@ mod tests {
         };
         let r = american_lsm_detailed(&p, OptionType::Put, 20, same_seed, same_seed).unwrap();
         // If evaluation reused the training paths the two estimates would coincide.
-        assert!((r.in_sample_price - r.price).abs() > 1e-9);
-        assert_eq!(r.train_samples, 2_000);
-        assert_eq!(r.eval_samples, 2_000);
+        assert!((r.in_sample_price - r.continuation_value).abs() > 1e-9);
+        assert_eq!((r.train_samples, r.eval_samples), (2_000, 2_000));
+    }
+
+    /// Deep in the money with a positive rate, immediate exercise is optimal.
+    /// The decision comes from the training paths alone: changing only the
+    /// evaluation seed must not change it, and the reported price is then the
+    /// payoff itself with zero standard error (not `max` of a noisy mean).
+    #[test]
+    fn lsm_immediate_exercise_is_decided_from_training_only() {
+        let p = params(50.0, 100.0, 0.05, 0.0, 0.2, 1.0);
+        let train = McConfig {
+            paths: 4_000,
+            seed: 11,
+            antithetic: true,
+        };
+        let mut previous = None;
+        for eval_seed in [1, 2, 3, 4] {
+            let eval = McConfig {
+                paths: 2_000,
+                seed: eval_seed,
+                antithetic: true,
+            };
+            let r = american_lsm_detailed(&p, OptionType::Put, 25, train, eval).unwrap();
+            assert!(r.exercise_now);
+            assert_eq!(r.price, 50.0);
+            assert_eq!(r.std_error, 0.0);
+            assert_eq!(r.immediate_exercise_value, 50.0);
+            assert_eq!(r.floored_price(), 50.0);
+            assert!(r.continuation_std_error > 0.0);
+            if let Some(prev) = previous {
+                assert_eq!(
+                    r.in_sample_price, prev,
+                    "training result depends on the evaluation seed"
+                );
+            }
+            previous = Some(r.in_sample_price);
+        }
+        // And for a call that is far out of the money, the policy continues.
+        let otm = params(50.0, 100.0, 0.05, 0.0, 0.2, 1.0);
+        let r = american_lsm_detailed(&otm, OptionType::Call, 25, train, train).unwrap();
+        assert!(!r.exercise_now && r.immediate_exercise_value == 0.0);
+    }
+
+    /// Near the exercise boundary the time-zero decision is noisy: across
+    /// training seeds both outcomes occur. The returned price is always either
+    /// the exact payoff (when exercising) or the evaluation mean (when not),
+    /// never a maximum chosen after seeing the evaluation sample, and averaged
+    /// over seeds it does not exceed the converged tree value.
+    #[test]
+    fn lsm_near_indifference_decision_is_noisy_but_unbiased_high() {
+        // K = 40, r = 6%, sigma = 20%, T = 1: the early-exercise boundary is near 32.
+        let p = params(32.3, 40.0, 0.06, 0.0, 0.2, 1.0);
+        let tree = binomial::price(&p, OptionType::Put, ExerciseStyle::American, 3000).unwrap();
+        let (mut now, mut cont, mut prices) = (0, 0, Vec::new());
+        for seed in 0..120u64 {
+            let train = McConfig {
+                paths: 1_000,
+                seed,
+                antithetic: false,
+            };
+            let eval = McConfig {
+                paths: 1_000,
+                seed: seed + 5_000,
+                antithetic: false,
+            };
+            let r = american_lsm_detailed(&p, OptionType::Put, 50, train, eval).unwrap();
+            if r.exercise_now {
+                now += 1;
+                assert_eq!(r.price, r.immediate_exercise_value);
+                assert_eq!(r.std_error, 0.0);
+            } else {
+                cont += 1;
+                assert_eq!(r.price, r.continuation_value);
+                assert_eq!(r.std_error, r.continuation_std_error);
+            }
+            prices.push(r.price);
+        }
+        assert!(
+            now > 5 && cont > 5,
+            "decision never flipped: exercise {now}, continue {cont}"
+        );
+        let m = prices.iter().sum::<f64>() / prices.len() as f64;
+        let se = (prices.iter().map(|x| (x - m).powi(2)).sum::<f64>()
+            / (prices.len() as f64 - 1.0)
+            / prices.len() as f64)
+            .sqrt();
+        assert!(
+            m < tree + 3.0 * se,
+            "mean policy value {m} +/- {se} vs tree {tree}"
+        );
     }
 
     #[test]
@@ -956,14 +1397,13 @@ mod tests {
     }
 
     #[test]
-    fn lsm_is_at_least_intrinsic_and_reproducible() {
+    fn lsm_is_reproducible() {
         let p = params(70.0, 100.0, 0.05, 0.0, 0.2, 1.0);
         let cfg = McConfig {
             paths: 5_000,
             ..McConfig::default()
         };
         let a = american_lsm(&p, OptionType::Put, 20, cfg).unwrap();
-        assert!(a.price >= 30.0);
         assert_eq!(a, american_lsm(&p, OptionType::Put, 20, cfg).unwrap());
     }
 

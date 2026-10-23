@@ -157,5 +157,178 @@ fn implied_vol_recovers_the_true_volatility_deep_into_the_tails() {
 )
 
 
+# ---- random and switch-boundary references (beyond hand-picked fixtures) --------
+import random
+
+rng_py = random.Random(20261023)
+
+
+def bnorm(x, s):
+    x, s = mpf(x), mpf(s)
+    d1 = x / s + s / 2
+    d2 = d1 - s
+    return exp(x / 2) * cdf(d1) - exp(-x / 2) * cdf(d2)
+
+
+def lu(lo, hi):
+    return math.exp(rng_py.uniform(math.log(lo), math.log(hi)))
+
+
+EXTRA = []  # (x, s, ln b) for ln_normalised_otm
+for _ in range(220):
+    xa = lu(1e-8, 1500.0)
+    sv = lu(1e-6, 60.0)
+    EXTRA.append((-xa, sv))
+# Points straddling the internal switch between the direct log-difference
+# (s >= 2 and u1 <= 5) and the quadrature branch.
+for s_edge in (1.9999999999, 2.0, 2.0000000001):
+    for u1 in (-0.5, 0.0, 1.0, 4.9999999, 5.0, 5.0000001, 7.0, 40.0):
+        # u1 = |x|/s - s/2  =>  |x| = s (u1 + s/2)
+        xa = s_edge * (u1 + s_edge / 2)
+        if xa > 0:
+            EXTRA.append((-xa, s_edge))
+extra_rows = []
+for x, s in EXTRA:
+    ref = bnorm(x, s)
+    if ref > 0:
+        extra_rows.append((x, s, float(log(ref))))
+
+lines.append("")
+lines.append("/// Seeded random (x, s) points and points on the internal branch boundaries.")
+lines.append("const EXTRA_REFS: &[(f64, f64, f64)] = &[")
+for x, s, l in extra_rows:
+    lines.append(f"    ({x!r}, {s!r}, {l!r}),")
+lines.append("];")
+
+# Random whole contracts: price from the exact binary inputs, plus how much of the
+# error budget is just the rounding of the derived inputs x and s.
+PRICE_ROWS = []
+while len(PRICE_ROWS) < 160:
+    S = lu(1.0, 1e4)
+    K = S * lu(0.2, 5.0)
+    T = lu(0.002, 5.0)
+    VOL = lu(0.02, 2.0)
+    R = rng_py.uniform(-0.02, 0.1)
+    Q = rng_py.uniform(0.0, 0.06)
+    is_call = rng_py.random() < 0.5
+    Sm, Km, Rm, Qm, Vm, Tm = map(mpf, (S, K, R, Q, VOL, T))
+    sq = Vm * sqrt(Tm)
+    d1 = (log(Sm / Km) + (Rm - Qm + Vm * Vm / 2) * Tm) / sq
+    d2 = d1 - sq
+    if is_call:
+        p = Sm * exp(-Qm * Tm) * cdf(d1) - Km * exp(-Rm * Tm) * cdf(d2)
+    else:
+        p = Km * exp(-Rm * Tm) * cdf(-d2) - Sm * exp(-Qm * Tm) * cdf(-d1)
+    if p < mpf("1e-290") or p > mpf("1e290"):
+        continue
+    x_exact = log(Sm / Km) + (Rm - Qm) * Tm
+    s_exact = sq
+    xf = math.log(S / K) + (R - Q) * T
+    sf = VOL * math.sqrt(T)
+    if xf == 0.0:
+        continue
+    b_exact = bnorm(-abs(x_exact), s_exact)
+    b_round = bnorm(-abs(xf), sf)
+    effect = abs(float(log(b_exact) - log(b_round)))
+    PRICE_ROWS.append((S, K, R, Q, VOL, T, is_call, float(p), effect))
+
+lines.append("")
+lines.append(
+    "/// (spot, strike, rate, dividend yield, vol, expiry, is_call, price from 150-digit arithmetic on the exact"
+)
+lines.append(
+    "/// binary inputs, and the change in ln b caused merely by rounding the derived x and s to f64)"
+)
+lines.append("type PriceRef = (f64, f64, f64, f64, f64, f64, bool, f64, f64);")
+lines.append("const PRICE_REFS: &[PriceRef] = &[")
+for r in PRICE_ROWS:
+    lines.append(
+        "    ("
+        + ", ".join(str(v).lower() if isinstance(v, bool) else repr(v) for v in r)
+        + "),"
+    )
+lines.append("];")
+lines.append(
+    """
+#[test]
+fn extra_random_and_boundary_points_match_150_digit_arithmetic() {
+    let mut worst = 0.0_f64;
+    for &(x, s, ln_ref) in EXTRA_REFS {
+        let got = ln_normalised_otm(x, s);
+        let err = (got - ln_ref).abs();
+        let limit = allowed(x, s);
+        worst = worst.max(err / limit);
+        assert!(err <= limit, "x={x:e} s={s:e}: {got} vs {ln_ref} (err {err:e}, allowed {limit:e})");
+    }
+    assert!(EXTRA_REFS.len() > 200);
+    println!("extra points: worst error / allowed = {worst:.3}");
+}
+
+/// End-to-end price against 150-digit arithmetic on the exact binary inputs.
+/// The total error is split into the algorithm's error (bounded by `allowed`) and
+/// the effect of rounding the derived quantities x = ln(F/K) and s = sigma sqrt(T)
+/// to f64, which no implementation using f64 intermediates can avoid and which the
+/// generator measured separately for every row.
+#[test]
+fn end_to_end_price_error_is_algorithm_plus_input_rounding() {
+    use quantkit::{bsm, OptionParams, OptionType};
+    let (mut worst_total, mut worst_effect) = (0.0_f64, 0.0_f64);
+    for &(s, k, r, q, vol, t, is_call, price, effect) in PRICE_REFS {
+        let kind = if is_call { OptionType::Call } else { OptionType::Put };
+        let p = OptionParams::builder()
+            .spot(s).strike(k).rate(r).dividend_yield(q).volatility(vol).expiry(t)
+            .build()
+            .unwrap();
+        let got = bsm::price(&p, kind);
+        let x = (s / k).ln() + (r - q) * t;
+        let sv = vol * t.sqrt();
+        let limit = allowed(-x.abs(), sv) + 2.0 * effect;
+        let err = ((got - price) / price).abs();
+        worst_total = worst_total.max(err);
+        worst_effect = worst_effect.max(effect);
+        assert!(
+            err <= limit,
+            "s={s} k={k} vol={vol} t={t} call={is_call}: rel err {err:e} > allowed {limit:e} (input-rounding part {effect:e})"
+        );
+    }
+    println!("price: worst total rel error {worst_total:e}; worst input-rounding effect {worst_effect:e}");
+    assert!(PRICE_REFS.len() >= 160);
+}
+
+#[test]
+fn implied_vol_on_random_contracts_recovers_vol_to_conditioning() {
+    use quantkit::implied_vol::{solve_detailed, SolverConfig};
+    use quantkit::{OptionParams, OptionType};
+    let mut checked = 0;
+    for &(s, k, r, q, vol, t, is_call, price, effect) in PRICE_REFS {
+        let kind = if is_call { OptionType::Call } else { OptionType::Put };
+        let c = OptionParams::builder()
+            .spot(s).strike(k).rate(r).dividend_yield(q).expiry(t)
+            .build_contract()
+            .unwrap();
+        let (ds, dk) = (s * (-q * t).exp(), k * (-r * t).exp());
+        let otm = if is_call { dk >= ds } else { dk <= ds };
+        match solve_detailed(&c, kind, price, SolverConfig::default()) {
+            Ok(sol) => {
+                // Only demand volatility recovery where the price carries the
+                // information: out of the money and not saturated.
+                if otm && vol * t.sqrt() < 6.0 {
+                    let rel = (sol.vol - vol).abs() / vol;
+                    assert!(rel < 2e-12 + 4.0 * effect, "k={k} vol={vol} t={t}: got {} rel {rel:e}", sol.vol);
+                    // Elasticity d ln price / d ln vol must be large enough to explain it.
+                    assert!(sol.elasticity > 0.0 && sol.elasticity.is_finite());
+                    checked += 1;
+                }
+            }
+            Err(quantkit::QuantError::PriceOutOfBounds { .. }) => {}
+            Err(e) => panic!("k={k} vol={vol} t={t} call={is_call}: {e}"),
+        }
+    }
+    assert!(checked > 30, "only {checked} OTM rows exercised");
+}
+"""
+)
+
+
 open(OUT, "w", encoding="utf-8").write("\n".join(lines))
 print(len(rows), "reference points written to", OUT)
