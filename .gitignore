@@ -17,3 +17,6 @@ python/target/
 /dist-sdist/
 /.venv*/
 /clean-tests/
+/sdist-tests/
+/sdist-files.txt
+/pytest_*.log
