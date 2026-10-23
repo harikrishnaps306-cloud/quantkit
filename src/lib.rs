@@ -12,6 +12,7 @@ pub mod bsm;
 pub mod dist;
 mod error;
 pub mod greeks;
+pub mod implied_vol;
 mod option;
 
 pub use error::{QuantError, Result};
