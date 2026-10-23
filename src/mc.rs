@@ -15,6 +15,7 @@
 //! Studies* 14 (2001).
 
 use crate::error::{QuantError, Result};
+use crate::linalg::solve3;
 use crate::option::{OptionParams, OptionType};
 
 /// A small, fast, seedable pseudo-random generator (xoshiro256++).
@@ -228,32 +229,6 @@ pub fn european(p: &OptionParams, kind: OptionType, cfg: McConfig) -> Result<McR
         price: disc * m,
         std_error: disc * se,
     })
-}
-
-/// Solves the 3x3 system `a x = b` by Gaussian elimination with partial
-/// pivoting. `None` if the matrix is (numerically) singular.
-fn solve3(mut a: [[f64; 3]; 3], mut b: [f64; 3]) -> Option<[f64; 3]> {
-    for col in 0..3 {
-        let pivot = (col..3).max_by(|&i, &j| a[i][col].abs().total_cmp(&a[j][col].abs()))?;
-        if a[pivot][col].abs() < 1e-12 {
-            return None;
-        }
-        a.swap(col, pivot);
-        b.swap(col, pivot);
-        for row in col + 1..3 {
-            let f = a[row][col] / a[col][col];
-            for c in col..3 {
-                a[row][c] -= f * a[col][c];
-            }
-            b[row] -= f * b[col];
-        }
-    }
-    let mut x = [0.0; 3];
-    for row in (0..3).rev() {
-        let s: f64 = (row + 1..3).map(|c| a[row][c] * x[c]).sum();
-        x[row] = (b[row] - s) / a[row][row];
-    }
-    Some(x)
 }
 
 /// Longstaff-Schwartz Monte Carlo price of an American option with `steps`
@@ -523,16 +498,5 @@ mod tests {
         let a = american_lsm(&p, OptionType::Put, 20, cfg).unwrap();
         assert!(a.price >= 30.0);
         assert_eq!(a, american_lsm(&p, OptionType::Put, 20, cfg).unwrap());
-    }
-
-    #[test]
-    fn solve3_solves_and_detects_singular() {
-        let x = solve3(
-            [[2.0, 0.0, 0.0], [0.0, 3.0, 0.0], [0.0, 0.0, 4.0]],
-            [2.0, 6.0, 12.0],
-        )
-        .unwrap();
-        assert_eq!(x, [1.0, 2.0, 3.0]);
-        assert!(solve3([[1.0, 1.0, 1.0]; 3], [1.0, 2.0, 3.0]).is_none());
     }
 }

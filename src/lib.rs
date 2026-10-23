@@ -40,9 +40,11 @@ pub mod dist;
 mod error;
 pub mod greeks;
 pub mod implied_vol;
+mod linalg;
 pub mod mc;
 mod option;
 pub mod risk;
+pub mod surface;
 
 pub use error::{QuantError, Result};
 pub use option::{Contract, ExerciseStyle, OptionBuilder, OptionParams, OptionType};
