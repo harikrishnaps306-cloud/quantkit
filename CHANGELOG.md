@@ -8,18 +8,37 @@ follows [Semantic Versioning](https://semver.org/).
 
 ## [0.2.0]
 
-### Added
-- `mc`: seeded xoshiro256++ RNG, European Monte Carlo (antithetic variates, standard error, confidence interval) and Longstaff-Schwartz American pricing.
-- `surface`: `VolSurface` (from vols or prices), interpolation, calendar/butterfly arbitrage checks, raw SVI parameters with the Gatheral-Jacquier butterfly condition, and quasi-explicit SVI fitting.
-- `batch`: batch price, Greeks, binomial and implied-vol functions; `grid` for option-grid generation.
-- Cargo features `serde` (validated deserialization of option inputs) and `parallel` (rayon-backed batch functions).
-- `python/`: PyO3 + maturin bindings with NumPy batch functions (not yet published).
-- Robustness test suite (`tests/no_panic.rs`).
+Unreleased locally; nothing here has been published, so the "Changed" items are
+differences from the earlier 0.2.0 development snapshot (commit `02a6393`), listed
+so that code written against it can be migrated.
 
-### Changed
-- Binomial steps are limited to 100,000, Longstaff-Schwartz to 100 million path-steps, and grids to 100 million combinations; larger requests return `InvalidInput` instead of overflowing.
-- European Monte Carlo now streams its statistics (constant memory).
+### Added
+- `limits`: the supported input domain, enforced by `OptionParams`, `Contract`, `VolSurface::new` and `dataset`.
+- `StatusCode` and `QuantError::status_code()`; `detailed` module with per-row `PriceRow`, `GreeksRow`, `IvRow`, `McRow` and column-oriented `price_columns` / `greeks_columns`.
+- `implied_vol::solve_detailed` returning `IvSolution` (residual, Newton/bisection step counts, vega).
+- `mc::american_lsm_detailed` / `LsmResult`: independent training and evaluation paths, in-sample versus out-of-sample price, fit diagnostics. `mc::Rng::for_stream`, `mc::derive_seed`.
+- `dataset` module: seeded, audited synthetic option datasets (`generate`, `DatasetSpec`, `Dataset`, `InvariantReport`, CSV export, checksum).
+- `surface`: `check_arbitrage_sampled`, `ArbitrageScope`, vertical-spread (slope) condition, `SviFit::max_abs_residual`.
+- Python: n-dimensional arrays with scalar pass-through, `*_detailed` functions, `STATUS`, `status_name`, `make_dataset`, `mc_american_detailed`, `set_num_threads`.
+- `docs/NUMERICS.md`, `docs/BENCHMARKS.md`, `docs/market-gap-report.md`; throughput benchmarks; independent-reference, domain-boundary and no-panic test suites.
+
+### Changed (breaking relative to the earlier snapshot)
+- Inputs outside `quantkit::limits` are rejected (for example volatility below `1e-8`, spot above `1e12`, `|rate| * expiry > 500`).
+- `bsm::price` clamps rounding-sized negative results to zero.
+- Implied volatility: attainable-range failures are `PriceOutOfBounds` (previously some were `NoConvergence`); the documentation no longer claims unconditional convergence.
+- Monte Carlo: results changed (block-based streams, `libm` functions); `std_error` for antithetic Longstaff-Schwartz is computed over pair means; `american_lsm` now returns the **out-of-sample** estimate trained on independent paths. European Monte Carlo and dataset results are thread-count independent and bitwise reproducible across platforms.
+- `ArbitrageReport` gained a `scope` field; its documentation now states that clean reports are scoped.
+- Risk: scale-safe standard deviations; results that would overflow are errors; max drawdown rejects equity paths that overflow.
 - `greeks::numerical` rejects non-positive or non-finite bump sizes.
+- Python: all-scalar batch calls return scalars (previously one-element arrays); array arguments must share a shape; `check_arbitrage()` returns an extra `scope` entry.
+- Removed the guessed `repository` URL from `Cargo.toml`; set the real one before publishing.
+
+### Fixed
+- Integer-overflow panics in binomial and Monte Carlo size handling (found by the no-panic suite).
+- A panic in surface arbitrage checks for nodes outside the option domain.
+- Valid-but-extreme inputs that produced `NaN`/negative closed-form prices (6,157 of 20,480 probed combinations produced non-finite values before the domain was defined).
+- Spurious zero-variance errors for tiny-scale returns, and silent `inf`/wrong drawdown for huge returns.
+- In-sample optimism of Longstaff-Schwartz estimates.
 
 ## [0.1.0]
 

@@ -1,78 +1,81 @@
 # quantkit
 
-`quantkit` is a Rust crate for options pricing and risk metrics. It prices European options with Black-Scholes-Merton (continuous dividend yield), American options on a Cox-Ross-Rubinstein tree, solves implied volatility, computes Greeks, and reports VaR, CVaR, Sharpe, Sortino and drawdown on a return series. It also includes seeded Monte Carlo (European and Longstaff-Schwartz American), batch and parallel APIs, implied-volatility surfaces with arbitrage checks and SVI fitting, optional `serde` support, and Python bindings. Inputs are validated up front and every fallible call returns a `Result`, so bad data (negative volatility, zero expiry, NaN, empty slices) gives an error and never a panic. The core crate is `#![forbid(unsafe_code)]` and has two required dependencies, `thiserror` and `libm`.
+`quantkit` is an unpublished Rust crate (with Python/NumPy bindings) for options pricing and investment risk. It prices European options with Black-Scholes-Merton (continuous dividend yield), American options on a Cox-Ross-Rubinstein tree and with Longstaff-Schwartz Monte Carlo, solves implied volatility, computes Greeks, builds and checks volatility surfaces, and reports VaR, CVaR, Sharpe, Sortino and drawdown. Two things are meant to set it apart: **batch results that say why each row failed** (status code plus solver or Monte Carlo diagnostics, instead of a bare `NaN`) and **reproducible, self-auditing synthetic datasets** for pricing models. Inputs are validated against a documented supported domain, every fallible call returns a `Result`, and the core is `#![forbid(unsafe_code)]` with two required dependencies (`thiserror`, `libm`).
+
+Status: version 0.2.0, **not published** to crates.io or PyPI, repository URL not set. See [docs/NUMERICS.md](docs/NUMERICS.md) for exact conventions and guarantees, [docs/BENCHMARKS.md](docs/BENCHMARKS.md) for measured performance, and [docs/market-gap-report.md](docs/market-gap-report.md) for how the feature choices were made.
 
 ## Install
 
+Not on crates.io yet. From a checkout:
+
 ```toml
 [dependencies]
-quantkit = "0.2"
-
-# optional features
-# quantkit = { version = "0.2", features = ["serde", "parallel"] }
+quantkit = { path = "../quantkit" }
+# optional: features = ["serde", "parallel"]
 ```
 
-Minimum supported Rust version: 1.74. The library, including the `serde` and `parallel` features, builds and passes its 74 unit tests on Rust 1.74 when dependencies are resolved with a Rust-version-aware lockfile (`CARGO_RESOLVER_INCOMPATIBLE_RUST_VERSIONS=fallback`). Without that, a fresh resolve may pick dependency releases that need a newer compiler. Dev-only tools (criterion, proptest integration tests) are tested on current stable.
+Minimum supported Rust version: 1.74. The library with all features builds and passes its unit tests on Rust 1.74 when dependencies are resolved with a Rust-version-aware lockfile (`CARGO_RESOLVER_INCOMPATIBLE_RUST_VERSIONS=fallback`); without that, a fresh resolve may pick releases that need a newer compiler. Integration tests, benchmarks and the Python bindings are only exercised on current stable.
 
 ## Usage
-
-Price a European option and its Greeks:
 
 ```rust
 use quantkit::{bsm, greeks, OptionParams, OptionType};
 
 let p = OptionParams::builder()
     .spot(42.0).strike(40.0).rate(0.10).volatility(0.20).expiry(0.5)
-    .build()?;
+    .build()?;                                        // validated against quantkit::limits
 let call = bsm::price(&p, OptionType::Call);          // ~4.76
-let g = greeks::analytic(&p, OptionType::Call);       // delta, gamma, vega, theta, rho
+let g = greeks::analytic(&p, OptionType::Call);       // delta, gamma, vega (per 1.00), theta (per year), rho (per 1.00)
 ```
 
-Price an American put and recover an implied volatility:
+Implied volatility with diagnostics, and American pricing:
 
 ```rust
 use quantkit::{binomial, implied_vol, ExerciseStyle, OptionParams, OptionType};
 
-let p = OptionParams::builder()
-    .spot(50.0).strike(50.0).rate(0.10).volatility(0.40).expiry(5.0 / 12.0)
-    .build()?;
-let american = binomial::price(&p, OptionType::Put, ExerciseStyle::American, 500)?;
-
 let contract = OptionParams::builder()
     .spot(21.0).strike(20.0).rate(0.10).expiry(0.25)
     .build_contract()?;
-let iv = implied_vol::solve(&contract, OptionType::Call, 1.875)?;   // ~0.235
+let sol = implied_vol::solve_detailed(&contract, OptionType::Call, 1.875, Default::default())?;
+// sol.vol ~ 0.235, sol.residual, sol.iterations, sol.newton_steps, sol.vega
+
+let p = OptionParams::builder()
+    .spot(50.0).strike(50.0).rate(0.10).volatility(0.40).expiry(5.0 / 12.0)
+    .build()?;
+let put = binomial::price(&p, OptionType::Put, ExerciseStyle::American, 500)?;
 ```
 
-Risk metrics on a slice of returns:
+Per-row batch results (a failed row never poisons the others):
 
 ```rust
-use quantkit::risk;
+use quantkit::detailed::{self, RawQuote};
+use quantkit::{implied_vol::SolverConfig, OptionType, StatusCode};
 
-let returns = [0.004, -0.011, 0.007, 0.001, -0.023, 0.015, -0.005, 0.009];
-let var = risk::historical_var(&returns, 0.95)?;     // positive loss fraction
-let cvar = risk::historical_cvar(&returns, 0.95)?;
-let sharpe = risk::sharpe_ratio(&returns, 0.0, 252.0)?;
+let quotes = [
+    RawQuote { spot: 21.0, strike: 20.0, rate: 0.1, dividend_yield: 0.0, expiry: 0.25, price: 1.875 },
+    RawQuote { spot: 21.0, strike: 20.0, rate: 0.1, dividend_yield: 0.0, expiry: 0.25, price: 25.0 }, // impossible
+];
+let rows = detailed::implied_vol(&quotes, OptionType::Call, SolverConfig::default());
+assert_eq!(rows[0].status, StatusCode::Ok);                 // rows[0].residual, .iterations, .vega
+assert_eq!(rows[1].status, StatusCode::PriceOutOfBounds);   // rows[1].error holds the details
 ```
 
-Monte Carlo and a vol surface:
+Monte Carlo with an independently evaluated exercise policy, and a reproducible dataset:
 
 ```rust
-use quantkit::{mc, surface::{SurfaceSlice, VolSurface}, OptionParams, OptionType};
+use quantkit::{dataset, mc, OptionParams, OptionType};
 
-let p = OptionParams::builder().spot(100.0).strike(105.0).rate(0.03).volatility(0.25).expiry(1.0).build()?;
-let est = mc::european(&p, OptionType::Call, mc::McConfig::default())?;   // price + std_error, seeded
-let american_put = mc::american_lsm(&p, OptionType::Put, 50, mc::McConfig::default())?;
+let p = OptionParams::builder().spot(36.0).strike(40.0).rate(0.06).volatility(0.2).expiry(1.0).build()?;
+let train = mc::McConfig { paths: 20_000, seed: 1, antithetic: true };
+let eval  = mc::McConfig { paths: 100_000, seed: 2, antithetic: true };
+let r = mc::american_lsm_detailed(&p, OptionType::Put, 50, train, eval)?;
+// r.price / r.std_error: independent paths (low-biased). r.in_sample_price: overfit, high-biased.
 
-let surface = VolSurface::new(100.0, 0.02, 0.0, vec![
-    SurfaceSlice { expiry: 0.25, strikes: vec![90.0, 100.0, 110.0], vols: vec![0.26, 0.21, 0.23] },
-    SurfaceSlice { expiry: 1.00, strikes: vec![80.0, 100.0, 120.0], vols: vec![0.27, 0.22, 0.24] },
-])?;
-let v = surface.vol(100.0, 0.5)?;
-assert!(surface.check_arbitrage().is_clean());
+let ds = dataset::generate(&dataset::DatasetSpec { rows: 10_000, seed: 7, ..Default::default() })?;
+assert!(ds.metadata.invariants.all_passed());   // ds.metadata.checksum, spec, conventions, version
 ```
 
-Runnable versions live in [`examples/`](examples): `cargo run --example price_with_greeks`, `var_from_returns` and `monte_carlo_and_surface`.
+Runnable examples are in [`examples/`](examples): `price_with_greeks`, `var_from_returns`, `monte_carlo_and_surface`, `ml_dataset` (run with `cargo run --example <name>`).
 
 ### Python
 
@@ -83,47 +86,53 @@ cd python && pip install maturin numpy && maturin develop --release
 ```python
 import numpy as np, quantkit as qk
 
-qk.bs_price(42, 40, 0.10, 0.20, 0.5)                                    # 4.759...
-qk.bs_price_batch(np.linspace(80, 120, 1000), 100.0, 0.03, 0.2, 1.0)    # NumPy in, NumPy out, GIL released
-qk.implied_vol_batch(prices, spots, 100.0, 0.03, 1.0, errors="nan")     # NaN for unsolvable rows
+qk.bs_price(42, 40, 0.10, 0.20, 0.5)                                    # 4.759... (float)
+prices = qk.bs_price_batch(np.linspace(80, 120, 1000), 100.0, 0.03, 0.2, 1.0)   # ndarray, any shape, GIL released
+d = qk.implied_vol_detailed(prices, spots, 100.0, 0.03, 1.0)            # d["vol"], d["status"], d["residual"], d["iterations"], d["vega"], d["messages"]
+qk.STATUS                                                                # {'Ok': 0, 'InvalidInput': 1, ...}
+ds = qk.make_dataset(rows=10_000, seed=7)                                # {'columns': {...}, 'metadata': {...}}
 ```
 
-Errors raise `quantkit.QuantError` (a `ValueError`). The bindings are not yet on PyPI.
+Array arguments must share a shape, scalars broadcast, and all-scalar calls return scalars. `errors="raise"` (default) raises `quantkit.QuantError` naming the first bad row; `errors="nan"` returns `NaN` for failed rows. Set `RAYON_NUM_THREADS` (or call `quantkit.set_num_threads(n)` first) if you also parallelise in Python. The wheel is built with the stable ABI for Python 3.9 and later; only Python 3.11 on Windows has been tested locally.
 
-## Features
+## What it contains
 
-- **Pricing:** BSM European call/put with continuous dividend yield; CRR binomial tree for American and European options.
-- **Implied volatility:** Newton-Raphson with bisection fallback; explicit `PriceOutOfBounds` and `NoConvergence` errors.
-- **Greeks:** analytic BSM delta, gamma, vega, theta, rho; generic bump-and-reprice Greeks (used for the binomial pricer).
-- **Monte Carlo:** seeded GBM European pricing with antithetic variates, standard errors and confidence intervals; Longstaff-Schwartz American pricing.
-- **Vol surfaces:** build from prices or vols, interpolate (linear in total variance), detect calendar and butterfly arbitrage at the nodes, fit SVI smiles.
-- **Batch and ML-friendly:** `batch` module (optional `parallel` feature via rayon), option-grid generation, optional `serde` (inputs are re-validated on deserialize), NumPy-based Python bindings.
-- **Risk:** historical VaR and CVaR, parametric (normal) VaR, Sharpe, Sortino, max drawdown, annualised volatility.
-- **Design:** validated builder types, no panics on bad input, borrowed slices for return series, doc example on every public item.
+* **Pricing:** BSM European; CRR tree (American/European, Bermudan with `steps` dates); seeded Monte Carlo European; Longstaff-Schwartz with independent training and evaluation paths.
+* **Greeks:** analytic BSM; central-difference numerical Greeks for any pricer.
+* **Implied volatility:** Newton with bisection fallback; precisely stated guarantee; diagnostics (residual, steps, vega).
+* **Surfaces:** build from vols or prices; interpolation; scoped arbitrage checks (quoted nodes, or a sampled grid); raw SVI with the Gatheral-Jacquier butterfly condition; SVI fitting with residual diagnostics.
+* **Risk:** historical VaR/CVaR, parametric VaR, Sharpe, Sortino, max drawdown, annualised volatility, with documented definitions.
+* **Batch:** plain batch functions; `detailed` per-row results with status codes; column-oriented fast paths; optional rayon parallelism; option grids.
+* **Datasets:** seeded Latin-hypercube or uniform sampling, boundary-corner rows, closed-form labels, metadata (spec, version, conventions, checksum) and a financial-invariant report.
+* **Optional:** `serde` (inputs are re-validated on deserialize), `parallel`.
 
-Conventions worth knowing: vega is per 1.00 of volatility, rho per 1.00 of rate, theta per year. VaR and CVaR are positive loss fractions. See the module docs for details.
+## Verification status
 
-## Accuracy and validation
+Executed locally (Windows 11, Rust 1.97.1; Python 3.11.9):
 
-- BSM prices are checked against Hull's textbook example (S=42, K=40, r=10%, sigma=20%, T=0.5: call 4.76, put 0.81). That is the one figure set taken as given; it is the example named in the project brief. Hull's Greeks example (S=49, K=50, r=5%, sigma=20%, T=20 weeks; delta 0.522, gamma 0.066, vega 12.1, theta -4.31) and implied-volatility example (call 1.875 gives about 23.5%) were confirmed through secondary sources that quote the book, not the book itself. Hull values are published to two or three digits, so those tests use matching tolerances.
-- Higher-precision checks (to about 1e-11) compare against independent Python implementations (`math.erfc` for Black-Scholes, plain loops for the CRR tree). These guard against implementation slips; they are not independent derivations of the formulas. The binomial tests deliberately do not rely on remembered textbook numbers for the two- and five-step American puts.
-- The CRR tree converges to BSM as steps increase (CRR oscillates, so convergence is not monotone).
-- Monte Carlo is tested against the closed form within standard errors (fixed seeds, so results are deterministic) and Longstaff-Schwartz against the binomial tree. The random number generator is checked statistically (moments, tail mass), not against published test vectors.
-- SVI fitting is tested on noise-free and noisy synthetic data generated from known parameters; the surface arbitrage checks are tested on constructed violations. The SVI butterfly density `g(k)` follows Gatheral and Jacquier (2014) and has not been checked against a second implementation.
-- A robustness suite feeds NaN, infinities, zeros, extreme magnitudes and oversized step/path counts to every public entry point and requires `Ok` or `Err`, never a panic. It found and fixed integer-overflow panics in the binomial and Monte Carlo size handling.
-- Property tests (proptest) cover put-call parity, monotonicity in spot, delta bounds, American >= European, no-arbitrage price bounds, implied-vol round trips, SVI round trips, Monte Carlo vs closed form, and VaR/CVaR/drawdown invariants.
-- The normal CDF uses `libm::erfc` (about 1 ulp, with relative accuracy in the tails).
+* `cargo fmt --check`, `cargo clippy --all-targets --all-features -D warnings`, `cargo doc` with warnings denied, all tests with default features, `--features serde`, `--features parallel` and all features, including 98 unit tests, property tests, a 30,000-case-per-test no-panic suite, domain-boundary tests, independent-reference tests and doctests.
+* Library unit tests on Rust 1.74 with all features.
+* Wheel built and installed in a **clean virtualenv**; 19 Python tests pass against the installed wheel.
+* Benchmarks in [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
 
-Limits: the CRR tree is `O(n^2)` and capped at 100,000 steps; Longstaff-Schwartz is capped at 100 million path-steps (about 800 MB). The CRR tree and its Greeks are finite differences, so they are noisier than the analytic ones. Implied volatility is ill-conditioned for deep in-the-money options priced at intrinsic value; the solver returns a volatility that reprices the option, which need not equal the volatility you started from. Plain Monte Carlo is unreliable for deep out-of-the-money options (almost every path pays zero). Longstaff-Schwartz is biased slightly low. The surface arbitrage checks look at the quoted nodes only, and the SVI fit does not enforce the butterfly condition (check it with `SviParams::is_butterfly_free`).
+Configured but **not yet executed**: the GitHub Actions workflow (Linux/macOS/Windows, Python 3.9/3.11/3.13, MSRV job). No claim is made that it passes.
 
-This crate is provided for education and research, with no warranty, and is not investment advice.
+Reference values: BSM against an independent `erf` closed form for the ATM zero-rate case, the exact call-put symmetry `C(S,K,r,q) = P(K,S,q,r)`, homogeneity, and 5-point finite differences of prices for every Greek; the binomial tree against exact `r=0`/`q=0` early-exercise identities and McKean's perpetual put; the SVI butterfly density against second derivatives of Black prices. Hull's textbook figures are used only where noted in the tests, with tolerances matching their published precision (Hull's two- and five-step American-put figures and rho could not be confirmed against the book and are **not** used as references).
+
+## Known limitations
+
+* Supported input domain is bounded ([docs/NUMERICS.md](docs/NUMERICS.md) section 1); zero volatility and zero expiry are rejected rather than approximated.
+* Implied-volatility accuracy is conditioned by vega: the solver guarantees the *price residual*, not the recovered volatility. Very deep out-of-the-money prices (about `1e-300`) fail with `NoConvergence`. The solver is Newton/bisection, not Jaeckel's "Let's Be Rational".
+* Monte Carlo `std_error` is sampling error only. Plain Monte Carlo is unreliable for deep out-of-the-money payoffs. Longstaff-Schwartz is a Bermudan, low-biased estimate; policy error is not measured. Random streams are not provably disjoint (hash-seeded, no jump-ahead), and the generator is tested statistically, not against reference vectors.
+* Surface arbitrage reports cover only the stated scope; a clean report is never a global guarantee. No SSVI. SVI fits do not enforce the butterfly condition.
+* Datasets are closed-form European Black-Scholes labels: no smile, no noise, no American or exotic labels. The invariant report is a self-consistency check, not an independent validation.
+* Bitwise cross-platform reproducibility covers `mc`, `dist`, `bsm`, `greeks` and `dataset` (pure `libm`); it has been checked on one OS only. The tree, solver, risk and surface modules can differ in the last place across platforms.
+* Python: GIL-released batch functions share a global Rayon pool; single-thread throughput is comparable to a NumPy/SciPy implementation, not better ([docs/BENCHMARKS.md](docs/BENCHMARKS.md)).
 
 ## Roadmap
 
-Done in 0.2: Monte Carlo, volatility surfaces, batch/parallel APIs, serde, Python bindings.
-
-Not yet: exotic options (barrier, Asian, digital), stochastic volatility models (Heston, SABR), arbitrage-free surface calibration (SSVI), fixed income, portfolio optimisation, an MCP or tool server for LLM agents, a PyPI release, market data feeds.
+Next candidates (see the final report in the repository history for reasoning): a faster, more tail-robust implied-volatility method; a published CI run on all three operating systems and a first PyPI/crates.io release once a repository exists; jump-ahead random streams; parallel dataset generation; American and smile-aware dataset labels. Not planned for now: live data, trading, an LLM tool server, bonds, portfolio optimisation, SSVI.
 
 ## License
 
-Licensed under either of [Apache License, Version 2.0](LICENSE-APACHE) or [MIT license](LICENSE-MIT) at your option.
+Licensed under either of [Apache License, Version 2.0](LICENSE-APACHE) or [MIT license](LICENSE-MIT) at your option. Provided for education and research, with no warranty; not investment advice.

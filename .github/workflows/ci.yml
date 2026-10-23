@@ -1,5 +1,9 @@
 name: CI
 
+# Configured but, as of this commit, never executed on GitHub. Every step below
+# mirrors a command that was run locally on Windows; nothing here has been
+# observed passing on Linux or macOS.
+
 on:
   push:
     branches: [main]
@@ -11,7 +15,15 @@ env:
 
 jobs:
   rust:
-    runs-on: ubuntu-latest
+    name: rust (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -20,21 +32,56 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: fmt
         run: cargo fmt --all -- --check
-      - name: clippy
+      - name: clippy (all features)
         run: cargo clippy --all-targets --all-features -- -D warnings
       - name: test (default features)
         run: cargo test --all-targets
+      - name: test (serde)
+        run: cargo test --all-targets --features serde
+      - name: test (parallel)
+        run: cargo test --all-targets --features parallel
       - name: test (all features)
         run: cargo test --all-targets --all-features
-      - name: doctests
+      - name: doctests (all features)
         run: cargo test --doc --all-features
+      - name: single-threaded rayon gives identical Monte Carlo and dataset results
+        run: RAYON_NUM_THREADS=1 cargo test --lib --features parallel -- european_bitwise checksum_regression
       - name: doc
         run: cargo doc --no-deps --all-features
         env:
           RUSTDOCFLAGS: "-D warnings"
+      - name: benches compile
+        run: cargo bench --no-run --all-features
+
+  msrv:
+    name: msrv (1.74)
+    runs-on: ubuntu-latest
+    env:
+      RUSTFLAGS: ""  # lints differ between toolchains; compile errors still fail
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.74
+      - name: resolve dependencies compatible with the declared rust-version
+        run: |
+          rm -f Cargo.lock
+          CARGO_RESOLVER_INCOMPATIBLE_RUST_VERSIONS=fallback cargo +stable generate-lockfile
+      - name: check library, all features
+        run: cargo +1.74 check --lib --all-features
+      - name: unit tests, all features
+        run: cargo +1.74 test --lib --all-features
 
   python:
-    runs-on: ubuntu-latest
+    name: python ${{ matrix.python }} (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        python: ["3.9", "3.11", "3.13"]
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -45,12 +92,17 @@ jobs:
           workspaces: python
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: ${{ matrix.python }}
       - name: clippy (bindings)
         run: cargo clippy --manifest-path python/Cargo.toml -- -D warnings
-      - name: build and test
+      - name: build the wheel
         run: |
-          python -m venv .venv
-          . .venv/bin/activate
-          pip install maturin pytest numpy
-          cd python && maturin develop --release && pytest -q tests
+          python -m pip install maturin
+          maturin build --release --manifest-path python/Cargo.toml -o dist
+      - name: install the wheel in a clean virtualenv and run the tests against it
+        run: |
+          python -m venv .venv-clean
+          if [ -d .venv-clean/Scripts ]; then PY=.venv-clean/Scripts/python; else PY=.venv-clean/bin/python; fi
+          $PY -m pip install dist/*.whl pytest
+          mkdir clean-tests && cp python/tests/*.py clean-tests/
+          cd clean-tests && ../$PY -m pytest -q
