@@ -15,6 +15,7 @@ mod error;
 pub mod greeks;
 pub mod implied_vol;
 mod option;
+pub mod risk;
 
 pub use error::{QuantError, Result};
 pub use option::{Contract, ExerciseStyle, OptionBuilder, OptionParams, OptionType};

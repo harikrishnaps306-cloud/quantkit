@@ -28,7 +28,7 @@ const MIN_VOL: f64 = 1e-9;
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SolverConfig {
     /// Relative price tolerance: stop when `|model - market| <= tolerance * market`
-    /// (never tighter than a few ulps of the price range). Default `1e-12`.
+    /// (never tighter than a few ulps). Default `1e-12`.
     pub tolerance: f64,
     /// Iteration budget. Default 100.
     pub max_iterations: usize,
@@ -125,7 +125,7 @@ pub fn solve_with(
         });
     }
 
-    let tol = (config.tolerance * market_price).max(8.0 * f64::EPSILON * upper);
+    let tol = config.tolerance.max(8.0 * f64::EPSILON) * market_price;
     let model = |vol: f64| -> Result<f64> { Ok(bsm::price(&contract.with_volatility(vol)?, kind)) };
     let sqrt_t = contract.expiry().sqrt();
 
