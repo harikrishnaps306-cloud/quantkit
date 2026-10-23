@@ -1,0 +1,24 @@
+[package]
+name = "quantkit"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.74"
+authors = ["Harikrishna Paykatt Valliaparambil"]
+description = "Options pricing (Black-Scholes-Merton, CRR binomial), Greeks, implied volatility and risk metrics (VaR, CVaR, Sharpe, Sortino)."
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/harikrishnaps306-cloud/quantkit"
+readme = "README.md"
+keywords = ["options", "black-scholes", "greeks", "var", "quant"]
+categories = ["finance", "mathematics"]
+exclude = [".github/"]
+
+[dependencies]
+thiserror = "1"
+
+[dev-dependencies]
+proptest = "1"
+criterion = { version = "0.5", default-features = false, features = ["cargo_bench_support"] }
+
+[[bench]]
+name = "pricing"
+harness = false
