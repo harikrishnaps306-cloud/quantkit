@@ -11,6 +11,28 @@ comparison is shown and described.
   SciPy 1.17.1
 * Date: 2026-10-23
 
+## The cost of the accurate far-tail method
+
+The pricer and the implied-volatility solver were rewritten for tail
+robustness (see `NUMERICS.md`, sections 1 and 4). Accuracy is bought with
+speed, and it is not free:
+
+| scalar benchmark (criterion, serial) | before | after |
+|---|---|---|
+| `bsm::price`, S=100 K=105 call | 17.8 ns | 32.4 ns |
+| `implied_vol::solve`, same option | 118 ns | 883 ns |
+
+The pricer evaluates the ordinary formula when an error estimate says it is
+accurate to about `2e-14` and the stable quadrature method otherwise (about
+150-400 ns per evaluation). Options that are far out of the money relative to
+`sigma sqrt(T)` take the slow path, so the batch numbers below depend heavily
+on how many such options the workload contains. The grid and random inputs used
+here are spread widely, so they sit towards the slow end; a book concentrated
+near the money would be faster. Loosening the switch point from 100 to 1000 in
+`src/black.rs` made the 100k-option batch price run 2.4x faster in a trial at
+the cost of up to `1e-13` instead of `2e-14` relative error; the default favours
+accuracy.
+
 ## Rust (criterion, `cargo bench --bench throughput`, 3 s measurement, median)
 
 Serial build vs `--features parallel` (rayon, 32 threads). Same inputs, same
@@ -18,50 +40,60 @@ code, results identical (checked by the test-suite, not by the benchmark).
 
 | benchmark | serial | parallel |
 |---|---|---|
-| `batch::price`, 100k options | 2.65 ms (37.8 M/s) | 0.316 ms (316 M/s) |
-| `batch::greeks`, 100k | 5.00 ms (20.0 M/s) | 1.22 ms (82 M/s) |
-| `detailed::price`, 100k | 3.94 ms (25.4 M/s) | 1.36 ms (73.6 M/s) |
-| `detailed::implied_vol`, 20k | 10.8 ms (1.85 M/s) | 1.03 ms (19.4 M/s) |
-| `mc::european`, 1M paths | 11.9 ms (83.8 M paths/s) | 0.80 ms (1.25 G paths/s) |
-| `mc::american_lsm`, 20k train + 20k eval, 50 steps | 36.6 ms | 29.3 ms |
-| `dataset::generate`, 100k rows | 43.6 ms | 43.9 ms (not parallelised) |
+| `batch::price`, 100k options | 9.96 ms (10.0 M/s) | 0.751 ms (133 M/s) |
+| `batch::greeks`, 100k | 4.92 ms (20.3 M/s) | 1.24 ms (80.6 M/s) |
+| `detailed::price`, 100k | 13.2 ms (7.6 M/s) | 1.43 ms (69.9 M/s) |
+| `detailed::implied_vol`, 20k | 51.7 ms (0.39 M/s) | 3.49 ms (5.7 M/s) |
+| `mc::european`, 1M paths | 9.4 ms (106 M paths/s) | 0.766 ms (1.31 G paths/s) |
+| `mc::american_lsm`, 20k train + 20k eval, 50 steps | 34.4 ms | 31.9 ms |
+| `dataset::generate`, 100k rows | 101 ms | 101 ms (not parallelised) |
 
-Also in `benches/pricing.rs` (earlier run, serial): BSM price about 18 ns,
-one implied-volatility solve about 118 ns, binomial American put 5.9 us /
-112 us / 430 us at 100 / 500 / 1000 steps.
+For reference, the previous formulas on the same benchmark inputs ran
+`batch::price` at 2.65 ms serial and `detailed::implied_vol` (20k) at 10.8 ms.
 
-Notes: LSM parallelises only the evaluation phase, so it gains little; the
-training regression is serial. Parallel speed-ups depend on the number of
-cores and will be smaller on smaller machines.
+Also in `benches/pricing.rs` (serial): binomial American put 5.7 us / 112 us /
+430 us at 100 / 500 / 1000 steps.
+
+Notes: LSM parallelises only the evaluation phase, so it gains little. Parallel
+speed-ups depend on the number of cores and will be smaller on smaller machines.
+
+A random sweep of 400,000 self-priced options over the whole supported domain
+(`implied_vol::solve_detailed`, release, serial; run once with 16-node
+quadrature, before the final change to 12 nodes) took 1.9 us per solve on
+average with a mean of 5.5 iterations, a maximum of 28, and no bisection steps
+needed; that average includes the in-the-money rows that are rejected before any
+iteration.
 
 ## Python (`benchmarks/python_bench.py`, median of 15 runs, 1,000,000 rows)
 
 Baseline: a NumPy + `scipy.special.ndtr` implementation of the same
 Black-Scholes-Merton call formula (written for this benchmark; results agree
-with quantkit to `5.7e-14` over all rows).
+with quantkit to `8.5e-14` over all rows, with the NumPy version being the less
+accurate in the tails).
 
 | call | all threads | `RAYON_NUM_THREADS=1` |
 |---|---|---|
-| `quantkit.bs_price_batch` | 23.9 ms (41.9 M rows/s) | 76.0 ms (13.2 M rows/s) |
-| NumPy + SciPy baseline | 77.5 ms (12.9 M rows/s) | 91.9 ms (10.9 M rows/s) |
-| `quantkit.bs_price_detailed` (status + messages) | 37.5 ms | 84.2 ms |
-| `quantkit.bs_greeks_batch` | 43.8 ms | 125.3 ms |
-| `quantkit.implied_vol_batch`, 200k rows | 16.8 ms | 98.1 ms |
-| `quantkit.implied_vol_detailed`, 200k rows | 20.1 ms | 101.8 ms |
-| `bs_price_batch`, 10 rows (per call) | 2.2 us | 2.6 us |
-| NumPy + SciPy, 10 rows (per call) | 6.8 us | 6.3 us |
+| `quantkit.bs_price_batch` | 29.0 ms (34.5 M rows/s) | 152.5 ms (6.6 M rows/s) |
+| NumPy + SciPy baseline | 75.3 ms (13.3 M rows/s) | 75.7 ms (13.2 M rows/s) |
+| `quantkit.bs_price_detailed` (status + messages) | 38.1 ms | 162.3 ms |
+| `quantkit.bs_greeks_batch` | 40.5 ms | 122.3 ms |
+| `quantkit.implied_vol_batch`, 200k rows | 29.3 ms | 343.0 ms |
+| `quantkit.implied_vol_detailed`, 200k rows | 32.9 ms | 340.4 ms |
+| `bs_price_batch`, 10 rows (per call) | 2.8 us | 3.1 us |
+| NumPy + SciPy, 10 rows (per call) | 7.0 us | 5.8 us |
 
 How to read this fairly:
 
-* The NumPy baseline timing varied by about 20% between the two sessions
-  (77 vs 92 ms), so the single-thread comparison (76 vs 77-92 ms) is
-  "comparable", not a win. The multi-thread win (about 3x here) comes from
-  using 32 cores; NumPy/SciPy above is single-threaded.
-* The Rust core alone computes 1M prices in about 26 ms serially (the criterion
-  figure scaled). The rest of the single-thread Python time is converting
-  NumPy arrays into Rust vectors and back. A first version that built a
-  struct per row took 94.7 ms single-threaded; the columnar path cut that to
-  76 ms. That conversion cost is the main remaining overhead.
+* **Single-threaded, quantkit's price batch is about 2x slower than the
+  NumPy/SciPy baseline on this input** (152 vs 76 ms). It was roughly on par
+  (76 vs 77 ms) before the stable far-tail method, which the inputs here
+  (strikes 60-140 vs spot 50-150, volatilities 0.1-0.8, expiries 0.05-3 years)
+  exercise often. The multi-thread result (about 2.6x faster than NumPy) comes
+  from using 32 cores; NumPy/SciPy above is single-threaded. Neither number says
+  anything about accuracy, where quantkit is the better of the two in the tails.
+* The share of the single-thread time spent converting NumPy arrays to Rust
+  vectors and back was not measured separately. A first version that built a
+  struct per row was clearly slower than the columnar path now used.
 * Not measured: comparisons with `py_vollib_vectorized`, `pyvolr`, QuantLib,
   or any implied-volatility competitor. Their speed claims are theirs; none
   were reproduced here.
@@ -69,6 +101,7 @@ How to read this fairly:
 ## Reproducing
 
 ```bash
+cargo bench --bench pricing
 cargo bench --bench throughput
 cargo bench --bench throughput --features parallel
 cd python && maturin develop --release && cd ..

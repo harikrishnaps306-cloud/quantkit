@@ -211,7 +211,7 @@ def test_make_dataset_is_reproducible_and_audited():
     assert price == pytest.approx(cols["price"][i], abs=1e-12)
     # Same checksum as the Rust regression-lock test.
     locked = qk.make_dataset(rows=200, seed=123)
-    assert locked["metadata"]["checksum"] == 13203027108969320594
+    assert locked["metadata"]["checksum"] == 6627530182418969352
     with pytest.raises(qk.QuantError):
         qk.make_dataset(rows=10, volatility=(1e-12, 1.0))
 

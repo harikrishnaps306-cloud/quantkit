@@ -110,14 +110,14 @@ Array arguments must share a shape, scalars broadcast, and all-scalar calls retu
 
 Executed locally (Windows 11, Rust 1.97.1; Python 3.11.9):
 
-* `cargo fmt --check`, `cargo clippy --all-targets --all-features -D warnings`, `cargo doc` with warnings denied, all tests with default features, `--features serde`, `--features parallel` and all features, including 98 unit tests, property tests, a 30,000-case-per-test no-panic suite, domain-boundary tests, independent-reference tests and doctests.
-* Library unit tests on Rust 1.74 with all features.
+* `cargo fmt --check`, `cargo clippy --all-targets --all-features -D warnings`, `cargo doc` with warnings denied, all tests with default features, `--features serde`, `--features parallel` and all features, including 104 unit tests, property tests, a no-panic suite (run once at 30,000 cases per test; 400 by default), domain-boundary tests, independent-reference tests, 150-digit accuracy tests for the pricer and the implied-volatility solver, and 93 doctests.
+* Library unit tests on Rust 1.74 with all features (104 pass, including both bitwise regression locks).
 * Wheel built and installed in a **clean virtualenv**; 19 Python tests pass against the installed wheel.
 * Benchmarks in [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
 
 Configured but **not yet executed**: the GitHub Actions workflow (Linux/macOS/Windows, Python 3.9/3.11/3.13, MSRV job). No claim is made that it passes.
 
-Reference values: BSM against an independent `erf` closed form for the ATM zero-rate case, the exact call-put symmetry `C(S,K,r,q) = P(K,S,q,r)`, homogeneity, and 5-point finite differences of prices for every Greek; the binomial tree against exact `r=0`/`q=0` early-exercise identities and McKean's perpetual put; the SVI butterfly density against second derivatives of Black prices. Hull's textbook figures are used only where noted in the tests, with tolerances matching their published precision (Hull's two- and five-step American-put figures and rho could not be confirmed against the book and are **not** used as references).
+Reference values: the normalised Black function and implied volatilities against 150-digit arithmetic over `|d1|` up to 36 (`tests/black_accuracy.rs`); BSM against an independent `erf` closed form for the ATM zero-rate case, the exact call-put symmetry `C(S,K,r,q) = P(K,S,q,r)`, homogeneity, and 5-point finite differences of prices for every Greek; the binomial tree against exact `r=0`/`q=0` early-exercise identities and McKean's perpetual put; the SVI butterfly density against second derivatives of Black prices. Hull's textbook figures are used only where noted in the tests, with tolerances matching their published precision (Hull's two- and five-step American-put figures and rho could not be confirmed against the book and are **not** used as references).
 
 ## Known limitations
 
@@ -127,7 +127,7 @@ Reference values: BSM against an independent `erf` closed form for the ATM zero-
 * Surface arbitrage reports cover only the stated scope; a clean report is never a global guarantee. No SSVI. SVI fits do not enforce the butterfly condition.
 * Datasets are closed-form European Black-Scholes labels: no smile, no noise, no American or exotic labels. The invariant report is a self-consistency check, not an independent validation.
 * Bitwise cross-platform reproducibility covers `mc`, `dist`, `bsm`, `greeks` and `dataset` (pure `libm`); it has been checked on one OS only. The tree, solver, risk and surface modules can differ in the last place across platforms.
-* Python: GIL-released batch functions share a global Rayon pool; single-thread throughput is comparable to a NumPy/SciPy implementation, not better ([docs/BENCHMARKS.md](docs/BENCHMARKS.md)).
+* Python: GIL-released batch functions share a global Rayon pool; single-thread throughput of the accurate pricer is about half that of a NumPy/SciPy implementation on wide-ranging inputs; with all threads it is about 2.6x faster ([docs/BENCHMARKS.md](docs/BENCHMARKS.md)). Accuracy, not speed, is the design priority of the pricer and the implied-volatility solver.
 
 ## Roadmap
 
