@@ -25,6 +25,7 @@ const MIN_VOL: f64 = 1e-9;
 /// let c = SolverConfig::default();
 /// assert_eq!(c.max_iterations, 100);
 /// ```
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SolverConfig {
     /// Relative price tolerance: stop when `|model - market| <= tolerance * market`

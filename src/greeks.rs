@@ -31,6 +31,7 @@ use crate::option::{OptionParams, OptionType};
 /// assert!(g.delta > 0.0 && g.gamma > 0.0 && g.vega > 0.0);
 /// # Ok::<(), quantkit::QuantError>(())
 /// ```
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Greeks {
     /// Sensitivity to the spot price.
@@ -106,6 +107,7 @@ pub fn analytic(p: &OptionParams, kind: OptionType) -> Greeks {
 /// let b = Bumps::default();
 /// assert!(b.spot_rel > 0.0);
 /// ```
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Bumps {
     /// Spot bump as a fraction of spot (default 0.5%).

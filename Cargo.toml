@@ -10,13 +10,28 @@ repository = "https://github.com/harikrishnaps306-cloud/quantkit"
 readme = "README.md"
 keywords = ["options", "black-scholes", "greeks", "var", "quant"]
 categories = ["finance", "mathematics"]
-exclude = [".github/"]
+exclude = [".github/", "python/"]
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
 
 [dependencies]
 thiserror = "1"
 libm = "0.2"
 
+serde = { version = "1", features = ["derive"], optional = true }
+rayon = { version = "1", optional = true }
+
+[features]
+default = []
+## Derive `Serialize`/`Deserialize` on inputs and outputs (inputs are re-validated on deserialize).
+serde = ["dep:serde"]
+## Parallel batch APIs via rayon.
+parallel = ["dep:rayon"]
+
 [dev-dependencies]
+serde_json = "1"
 proptest = "1"
 criterion = { version = "0.5", default-features = false, features = ["cargo_bench_support"] }
 

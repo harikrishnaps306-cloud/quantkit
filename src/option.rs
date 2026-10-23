@@ -10,6 +10,7 @@ use crate::error::{check_finite, check_positive, QuantError, Result};
 /// use quantkit::OptionType;
 /// assert_ne!(OptionType::Call, OptionType::Put);
 /// ```
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum OptionType {
     /// Right to buy the underlying at the strike.
@@ -26,6 +27,7 @@ pub enum OptionType {
 /// use quantkit::ExerciseStyle;
 /// assert_ne!(ExerciseStyle::European, ExerciseStyle::American);
 /// ```
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ExerciseStyle {
     /// Exercisable only at expiry.
@@ -53,6 +55,11 @@ pub enum ExerciseStyle {
 /// assert_eq!(p.volatility(), 0.2);
 /// # Ok::<(), quantkit::QuantError>(())
 /// ```
+#[cfg_attr(
+    feature = "serde",
+    derive(serde::Serialize, serde::Deserialize),
+    serde(try_from = "ContractRaw", into = "ContractRaw")
+)]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Contract {
     spot: f64,
@@ -124,6 +131,11 @@ impl Contract {
 /// assert_eq!(p.dividend_yield(), 0.0);
 /// # Ok::<(), quantkit::QuantError>(())
 /// ```
+#[cfg_attr(
+    feature = "serde",
+    derive(serde::Serialize, serde::Deserialize),
+    serde(try_from = "OptionParamsRaw", into = "OptionParamsRaw")
+)]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct OptionParams {
     contract: Contract,
@@ -348,6 +360,88 @@ impl OptionBuilder {
     }
 }
 
+/// Plain-field mirror of [`Contract`] used for (de)serialization, so that
+/// deserialized values go through the same validation as the builder.
+#[cfg(feature = "serde")]
+#[derive(serde::Serialize, serde::Deserialize)]
+struct ContractRaw {
+    spot: f64,
+    strike: f64,
+    rate: f64,
+    #[serde(default)]
+    dividend_yield: f64,
+    expiry: f64,
+}
+
+#[cfg(feature = "serde")]
+impl From<Contract> for ContractRaw {
+    fn from(c: Contract) -> Self {
+        Self {
+            spot: c.spot,
+            strike: c.strike,
+            rate: c.rate,
+            dividend_yield: c.dividend_yield,
+            expiry: c.expiry,
+        }
+    }
+}
+
+#[cfg(feature = "serde")]
+impl TryFrom<ContractRaw> for Contract {
+    type Error = QuantError;
+    fn try_from(r: ContractRaw) -> Result<Self> {
+        OptionParams::builder()
+            .spot(r.spot)
+            .strike(r.strike)
+            .rate(r.rate)
+            .dividend_yield(r.dividend_yield)
+            .expiry(r.expiry)
+            .build_contract()
+    }
+}
+
+/// Plain-field mirror of [`OptionParams`] used for (de)serialization.
+#[cfg(feature = "serde")]
+#[derive(serde::Serialize, serde::Deserialize)]
+struct OptionParamsRaw {
+    spot: f64,
+    strike: f64,
+    rate: f64,
+    #[serde(default)]
+    dividend_yield: f64,
+    volatility: f64,
+    expiry: f64,
+}
+
+#[cfg(feature = "serde")]
+impl From<OptionParams> for OptionParamsRaw {
+    fn from(p: OptionParams) -> Self {
+        Self {
+            spot: p.spot(),
+            strike: p.strike(),
+            rate: p.rate(),
+            dividend_yield: p.dividend_yield(),
+            volatility: p.volatility(),
+            expiry: p.expiry(),
+        }
+    }
+}
+
+#[cfg(feature = "serde")]
+impl TryFrom<OptionParamsRaw> for OptionParams {
+    type Error = QuantError;
+    fn try_from(r: OptionParamsRaw) -> Result<Self> {
+        OptionParams::builder()
+            .spot(r.spot)
+            .strike(r.strike)
+            .rate(r.rate)
+            .dividend_yield(r.dividend_yield)
+            .volatility(r.volatility)
+            .expiry(r.expiry)
+            .build()
+    }
+}
+
 fn missing(name: &'static str) -> QuantError {
     QuantError::InvalidInput {
         name,
@@ -402,6 +496,23 @@ mod tests {
         let no_vol = OptionParams::builder().spot(1.0).strike(1.0).expiry(1.0);
         assert!(no_vol.build().is_err());
         assert!(no_vol.build_contract().is_ok());
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn serde_round_trip_and_validation() {
+        let p = base().rate(0.03).dividend_yield(0.01).build().unwrap();
+        let json = serde_json::to_string(&p).unwrap();
+        let back: OptionParams = serde_json::from_str(&json).unwrap();
+        assert_eq!(p, back);
+        // dividend_yield is optional on input.
+        let ok = r#"{"spot":100,"strike":100,"rate":0.05,"volatility":0.2,"expiry":1}"#;
+        assert!(serde_json::from_str::<OptionParams>(ok).is_ok());
+        // Invalid values are rejected on deserialize, not smuggled in.
+        let bad = r#"{"spot":100,"strike":100,"rate":0.05,"volatility":-0.2,"expiry":1}"#;
+        assert!(serde_json::from_str::<OptionParams>(bad).is_err());
+        let zero_expiry = r#"{"spot":1,"strike":1,"rate":0,"expiry":0}"#;
+        assert!(serde_json::from_str::<Contract>(zero_expiry).is_err());
     }
 
     #[test]
