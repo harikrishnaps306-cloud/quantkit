@@ -1,0 +1,19 @@
+[package]
+name = "quantkit-py"
+version = "0.2.0"
+edition = "2021"
+authors = ["Harikrishna Paykatt Valliaparambil"]
+description = "Python bindings for the quantkit options pricing and risk library."
+license = "MIT OR Apache-2.0"
+publish = false
+
+[lib]
+name = "_quantkit"
+crate-type = ["cdylib"]
+
+[workspace]
+
+[dependencies]
+numpy = "0.30.0"
+pyo3 = { version = "0.30.1", features = ["abi3-py39"] }
+quantkit = { version = "0.2.0", path = "..", features = ["parallel"] }

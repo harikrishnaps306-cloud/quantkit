@@ -5,3 +5,4 @@
 # It is recommended to check this file in to source control so that
 # everyone who runs the test benefits from these saved cases.
 cc ac6e7f3b1c8d30b53b1cd4ae7ad624b924cda83cd2e03a15ebf84d8c9a1b36a0 # shrinks to s = 50.0, moneyness = 0.7, r = 0.0, q = 0.0, v = 0.1, t = 0.1, is_call = false
+cc 787f01bb533931a831485f772b50c6b64b747df18c96e79ef73f4295fc006350 # shrinks to s = 88.63757518028127, k = 139.39925138145603, r = 0.0, v = 0.12537776753401547, t = 0.37273730618503215, seed = 0

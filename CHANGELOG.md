@@ -6,6 +6,15 @@ follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.2.0]
+
+### Added
+- `mc`: seeded xoshiro256++ RNG, European Monte Carlo (antithetic variates, standard error, confidence interval) and Longstaff-Schwartz American pricing.
+- `surface`: `VolSurface` (from vols or prices), interpolation, calendar/butterfly arbitrage checks, raw SVI parameters with the Gatheral-Jacquier butterfly condition, and quasi-explicit SVI fitting.
+- `batch`: batch price, Greeks, binomial and implied-vol functions; `grid` for option-grid generation.
+- Cargo features `serde` (validated deserialization of option inputs) and `parallel` (rayon-backed batch functions).
+- `python/`: PyO3 + maturin bindings with NumPy batch functions (not yet published).
+
 ## [0.1.0]
 
 First release.

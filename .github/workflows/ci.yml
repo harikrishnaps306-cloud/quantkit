@@ -10,7 +10,7 @@ env:
   RUSTFLAGS: "-D warnings"
 
 jobs:
-  ci:
+  rust:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -21,12 +21,36 @@ jobs:
       - name: fmt
         run: cargo fmt --all -- --check
       - name: clippy
-        run: cargo clippy --all-targets -- -D warnings
-      - name: test
+        run: cargo clippy --all-targets --all-features -- -D warnings
+      - name: test (default features)
         run: cargo test --all-targets
+      - name: test (all features)
+        run: cargo test --all-targets --all-features
       - name: doctests
-        run: cargo test --doc
+        run: cargo test --doc --all-features
       - name: doc
-        run: cargo doc --no-deps
+        run: cargo doc --no-deps --all-features
         env:
           RUSTDOCFLAGS: "-D warnings"
+
+  python:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: python
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: clippy (bindings)
+        run: cargo clippy --manifest-path python/Cargo.toml -- -D warnings
+      - name: build and test
+        run: |
+          python -m venv .venv
+          . .venv/bin/activate
+          pip install maturin pytest numpy
+          cd python && maturin develop --release && pytest -q tests

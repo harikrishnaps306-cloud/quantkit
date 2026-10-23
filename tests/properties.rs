@@ -127,3 +127,38 @@ proptest! {
         prop_assert!(hi >= lo - 1e-12);
     }
 }
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(40))]
+
+    /// Noise-free SVI data from admissible parameters must be fitted to
+    /// high accuracy (the true parameters are a feasible optimum).
+    #[test]
+    fn svi_fit_reproduces_noise_free_smiles(
+        a in 0.01..0.08f64, b in 0.1..0.8f64, rho in -0.8..0.8f64,
+        m in -0.2..0.2f64, sigma in 0.05..0.4f64,
+    ) {
+        use quantkit::surface::{fit_svi, SviParams};
+        let truth = SviParams::new(a, b, rho, m, sigma).unwrap();
+        let ks: Vec<f64> = (-20..=20).map(|i| f64::from(i) / 20.0).collect();
+        let ws: Vec<f64> = ks.iter().map(|&k| truth.total_variance(k)).collect();
+        let fit = fit_svi(&ks, &ws).unwrap();
+        prop_assert!(fit.rmse < 1e-7, "rmse {}", fit.rmse);
+    }
+
+    #[test]
+    fn mc_european_within_five_standard_errors_of_bsm(
+        s in 50.0..150.0f64, m in 0.8..1.25f64, r in 0.0..0.08f64,
+        v in 0.1..0.6f64, t in 0.1..2.0f64, seed in 0u64..1000,
+    ) {
+        use quantkit::mc::{european, McConfig};
+        // Strikes near the money only: for deep out-of-the-money options
+        // nearly every path pays zero and the sample standard error is
+        // meaningless (a known limit of plain Monte Carlo).
+        let p = params(s, s * m, r, 0.0, v, t);
+        let est = european(&p, OptionType::Call, McConfig { paths: 40_000, seed, antithetic: true }).unwrap();
+        let exact = bsm::call_price(&p);
+        prop_assert!((est.price - exact).abs() <= 5.0 * est.std_error + 1e-9,
+            "{} vs {exact} (se {})", est.price, est.std_error);
+    }
+}
