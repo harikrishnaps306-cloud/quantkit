@@ -70,6 +70,92 @@ pub enum QuantError {
     },
 }
 
+/// A compact, stable status code for one row of a batch result.
+///
+/// The numeric values are part of the public contract (they are what the
+/// Python bindings expose) and will not be renumbered.
+///
+/// | code | name |
+/// |---|---|
+/// | 0 | `Ok` |
+/// | 1 | `InvalidInput` |
+/// | 2 | `NonFinite` |
+/// | 3 | `EmptyInput` |
+/// | 4 | `NoConvergence` |
+/// | 5 | `PriceOutOfBounds` |
+/// | 255 | `Other` (a future error kind) |
+///
+/// # Examples
+///
+/// ```
+/// use quantkit::{QuantError, StatusCode};
+/// let e = QuantError::NonFinite { name: "spot" };
+/// assert_eq!(e.status_code(), StatusCode::NonFinite);
+/// assert_eq!(StatusCode::NonFinite as u8, 2);
+/// assert_eq!(StatusCode::from_u8(4), Some(StatusCode::NoConvergence));
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[repr(u8)]
+pub enum StatusCode {
+    /// The row succeeded.
+    Ok = 0,
+    /// An input was missing or outside its valid / supported range.
+    InvalidInput = 1,
+    /// An input or result was NaN or infinite.
+    NonFinite = 2,
+    /// A required slice was empty.
+    EmptyInput = 3,
+    /// A solver did not reach its tolerance.
+    NoConvergence = 4,
+    /// A price lies outside the attainable range.
+    PriceOutOfBounds = 5,
+    /// An error kind added after this version.
+    Other = 255,
+}
+
+impl StatusCode {
+    /// Short stable name, e.g. `"NoConvergence"`.
+    pub fn name(self) -> &'static str {
+        match self {
+            StatusCode::Ok => "Ok",
+            StatusCode::InvalidInput => "InvalidInput",
+            StatusCode::NonFinite => "NonFinite",
+            StatusCode::EmptyInput => "EmptyInput",
+            StatusCode::NoConvergence => "NoConvergence",
+            StatusCode::PriceOutOfBounds => "PriceOutOfBounds",
+            StatusCode::Other => "Other",
+        }
+    }
+
+    /// Converts a raw code back to a status, or `None` if unknown.
+    pub fn from_u8(code: u8) -> Option<Self> {
+        Some(match code {
+            0 => StatusCode::Ok,
+            1 => StatusCode::InvalidInput,
+            2 => StatusCode::NonFinite,
+            3 => StatusCode::EmptyInput,
+            4 => StatusCode::NoConvergence,
+            5 => StatusCode::PriceOutOfBounds,
+            255 => StatusCode::Other,
+            _ => return None,
+        })
+    }
+}
+
+impl QuantError {
+    /// The [`StatusCode`] for this error.
+    pub fn status_code(&self) -> StatusCode {
+        match self {
+            QuantError::InvalidInput { .. } => StatusCode::InvalidInput,
+            QuantError::NonFinite { .. } => StatusCode::NonFinite,
+            QuantError::EmptyInput { .. } => StatusCode::EmptyInput,
+            QuantError::NoConvergence { .. } => StatusCode::NoConvergence,
+            QuantError::PriceOutOfBounds { .. } => StatusCode::PriceOutOfBounds,
+        }
+    }
+}
+
 /// Returns `Err(NonFinite)` unless `x` is finite.
 pub(crate) fn check_finite(name: &'static str, x: f64) -> Result<f64> {
     if x.is_finite() {

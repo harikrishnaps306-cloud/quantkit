@@ -17,14 +17,23 @@ use crate::greeks::{self, Greeks};
 use crate::implied_vol;
 use crate::option::{Contract, ExerciseStyle, OptionParams, OptionType};
 
+/// Below this many items the `parallel` feature still runs serially, because
+/// the cost of waking worker threads exceeds the work. Results are identical
+/// either way.
 #[cfg(feature = "parallel")]
-fn map<T: Sync, R: Send, F: Fn(&T) -> R + Sync + Send>(items: &[T], f: F) -> Vec<R> {
+const PARALLEL_THRESHOLD: usize = 256;
+
+#[cfg(feature = "parallel")]
+pub(crate) fn map<T: Sync, R: Send, F: Fn(&T) -> R + Sync + Send>(items: &[T], f: F) -> Vec<R> {
     use rayon::prelude::*;
+    if items.len() < PARALLEL_THRESHOLD {
+        return items.iter().map(f).collect();
+    }
     items.par_iter().map(f).collect()
 }
 
 #[cfg(not(feature = "parallel"))]
-fn map<T: Sync, R: Send, F: Fn(&T) -> R + Sync + Send>(items: &[T], f: F) -> Vec<R> {
+pub(crate) fn map<T: Sync, R: Send, F: Fn(&T) -> R + Sync + Send>(items: &[T], f: F) -> Vec<R> {
     items.iter().map(f).collect()
 }
 

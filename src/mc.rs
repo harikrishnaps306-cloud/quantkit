@@ -144,6 +144,22 @@ impl Rng {
     }
 }
 
+/// Derives a per-item seed from a base seed and an index, for batches where
+/// every item needs its own independent random stream.
+///
+/// # Examples
+///
+/// ```
+/// use quantkit::mc::derive_seed;
+/// assert_eq!(derive_seed(1, 5), derive_seed(1, 5));
+/// assert_ne!(derive_seed(1, 5), derive_seed(1, 6));
+/// ```
+pub fn derive_seed(seed: u64, index: u64) -> u64 {
+    let mut a = seed;
+    let mut b = index ^ 0xE703_7ED1_A0B4_28DB;
+    splitmix64(&mut a) ^ splitmix64(&mut b).rotate_left(17)
+}
+
 /// Simulation settings.
 ///
 /// # Examples

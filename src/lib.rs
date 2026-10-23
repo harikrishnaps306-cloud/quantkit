@@ -36,6 +36,7 @@
 pub mod batch;
 pub mod binomial;
 pub mod bsm;
+pub mod detailed;
 pub mod dist;
 mod error;
 pub mod greeks;
@@ -47,5 +48,5 @@ mod option;
 pub mod risk;
 pub mod surface;
 
-pub use error::{QuantError, Result};
+pub use error::{QuantError, Result, StatusCode};
 pub use option::{Contract, ExerciseStyle, OptionBuilder, OptionParams, OptionType};
