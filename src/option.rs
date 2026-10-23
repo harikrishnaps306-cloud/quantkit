@@ -1,6 +1,7 @@
 //! Typed, validated option inputs.
 
-use crate::error::{check_finite, check_positive, QuantError, Result};
+use crate::error::{check_range, QuantError, Result};
+use crate::limits::*;
 
 /// Call or put.
 ///
@@ -70,6 +71,39 @@ pub struct Contract {
 }
 
 impl Contract {
+    /// Single validation point for every way of constructing a contract.
+    fn checked(
+        spot: f64,
+        strike: f64,
+        rate: f64,
+        dividend_yield: f64,
+        expiry: f64,
+    ) -> Result<Self> {
+        check_range("spot", spot, MIN_PRICE, MAX_PRICE)?;
+        check_range("strike", strike, MIN_PRICE, MAX_PRICE)?;
+        check_range("expiry", expiry, MIN_EXPIRY, MAX_EXPIRY)?;
+        check_range("rate", rate, -MAX_ABS_RATE, MAX_ABS_RATE)?;
+        check_range(
+            "dividend_yield",
+            dividend_yield,
+            -MAX_ABS_RATE,
+            MAX_ABS_RATE,
+        )?;
+        if rate.abs() * expiry > MAX_RATE_TIME || dividend_yield.abs() * expiry > MAX_RATE_TIME {
+            return Err(QuantError::InvalidInput {
+                name: "rate",
+                reason: "|rate| * expiry and |dividend_yield| * expiry must not exceed 500",
+            });
+        }
+        Ok(Self {
+            spot,
+            strike,
+            rate,
+            dividend_yield,
+            expiry,
+        })
+    }
+
     /// Spot price of the underlying (> 0).
     pub fn spot(&self) -> f64 {
         self.spot
@@ -107,7 +141,7 @@ impl Contract {
     /// # Ok::<(), quantkit::QuantError>(())
     /// ```
     pub fn with_volatility(&self, volatility: f64) -> Result<OptionParams> {
-        check_positive("volatility", volatility)?;
+        check_range("volatility", volatility, MIN_VOL, MAX_VOL)?;
         Ok(OptionParams {
             contract: *self,
             volatility,
@@ -198,10 +232,11 @@ impl OptionParams {
     /// # Ok::<(), quantkit::QuantError>(())
     /// ```
     pub fn with_spot(&self, spot: f64) -> Result<Self> {
-        check_positive("spot", spot)?;
-        let mut out = *self;
-        out.contract.spot = spot;
-        Ok(out)
+        let c = &self.contract;
+        Ok(Self {
+            contract: Contract::checked(spot, c.strike, c.rate, c.dividend_yield, c.expiry)?,
+            volatility: self.volatility,
+        })
     }
 
     /// Copy with a different volatility (re-validated).
@@ -229,10 +264,11 @@ impl OptionParams {
     /// # Ok::<(), quantkit::QuantError>(())
     /// ```
     pub fn with_rate(&self, rate: f64) -> Result<Self> {
-        check_finite("rate", rate)?;
-        let mut out = *self;
-        out.contract.rate = rate;
-        Ok(out)
+        let c = &self.contract;
+        Ok(Self {
+            contract: Contract::checked(c.spot, c.strike, rate, c.dividend_yield, c.expiry)?,
+            volatility: self.volatility,
+        })
     }
 
     /// Copy with a different time to expiry (re-validated).
@@ -247,10 +283,11 @@ impl OptionParams {
     /// # Ok::<(), quantkit::QuantError>(())
     /// ```
     pub fn with_expiry(&self, expiry: f64) -> Result<Self> {
-        check_positive("expiry", expiry)?;
-        let mut out = *self;
-        out.contract.expiry = expiry;
-        Ok(out)
+        let c = &self.contract;
+        Ok(Self {
+            contract: Contract::checked(c.spot, c.strike, c.rate, c.dividend_yield, expiry)?,
+            volatility: self.volatility,
+        })
     }
 }
 
@@ -325,18 +362,13 @@ impl OptionBuilder {
     /// assert!(r.is_err());
     /// ```
     pub fn build_contract(&self) -> Result<Contract> {
-        let spot = check_positive("spot", self.spot.ok_or(missing("spot"))?)?;
-        let strike = check_positive("strike", self.strike.ok_or(missing("strike"))?)?;
-        let expiry = check_positive("expiry", self.expiry.ok_or(missing("expiry"))?)?;
-        let rate = check_finite("rate", self.rate)?;
-        let dividend_yield = check_finite("dividend_yield", self.dividend_yield)?;
-        Ok(Contract {
-            spot,
-            strike,
-            rate,
-            dividend_yield,
-            expiry,
-        })
+        Contract::checked(
+            self.spot.ok_or(missing("spot"))?,
+            self.strike.ok_or(missing("strike"))?,
+            self.rate,
+            self.dividend_yield,
+            self.expiry.ok_or(missing("expiry"))?,
+        )
     }
 
     /// Validates all fields and returns [`OptionParams`].

@@ -7,9 +7,9 @@
 //! * call = `S e^{-qT} N(d1) - K e^{-rT} N(d2)`
 //! * put = `K e^{-rT} N(-d2) - S e^{-qT} N(-d1)`
 //!
-//! Inputs are validated when [`OptionParams`] is built, so pricing itself is
-//! infallible. Only absurd (but finite) inputs, such as a volatility of
-//! `1e300`, can overflow to a non-finite result.
+//! Inputs are validated when [`OptionParams`] is built (see [`crate::limits`]),
+//! so pricing itself is infallible and, within that domain, always returns a
+//! finite, non-negative number.
 
 use crate::dist::norm_cdf;
 use crate::option::{OptionParams, OptionType};
@@ -43,10 +43,14 @@ pub fn price(p: &OptionParams, kind: OptionType) -> f64 {
     let (d1, d2) = d1_d2(p);
     let disc_spot = p.spot() * (-p.dividend_yield() * p.expiry()).exp();
     let disc_strike = p.strike() * (-p.rate() * p.expiry()).exp();
-    match kind {
+    // Within the supported domain (see `limits`) the true price is >= 0; the
+    // difference of two nearly equal terms can come out as a rounding-sized
+    // negative number, which is clamped to zero.
+    let raw = match kind {
         OptionType::Call => disc_spot * norm_cdf(d1) - disc_strike * norm_cdf(d2),
         OptionType::Put => disc_strike * norm_cdf(-d2) - disc_spot * norm_cdf(-d1),
-    }
+    };
+    raw.max(0.0)
 }
 
 /// Shorthand for `price(p, OptionType::Call)`.
@@ -164,9 +168,9 @@ mod tests {
 
     #[test]
     fn very_short_expiry_approaches_intrinsic() {
-        let call_itm = params(105.0, 100.0, 0.05, 0.0, 0.2, 1e-9);
+        let call_itm = params(105.0, 100.0, 0.05, 0.0, 0.2, 1e-8);
         assert!((call_price(&call_itm) - 5.0).abs() < 1e-6);
-        let put_otm = params(105.0, 100.0, 0.05, 0.0, 0.2, 1e-9);
+        let put_otm = params(105.0, 100.0, 0.05, 0.0, 0.2, 1e-8);
         assert!(put_price(&put_otm) < 1e-12);
     }
 

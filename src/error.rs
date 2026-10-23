@@ -90,3 +90,24 @@ pub(crate) fn check_positive(name: &'static str, x: f64) -> Result<f64> {
         })
     }
 }
+
+/// Returns `Err` unless `x` is finite and within `[lo, hi]`.
+///
+/// Non-positive values get the more specific "strictly positive" message when
+/// `lo > 0`.
+pub(crate) fn check_range(name: &'static str, x: f64, lo: f64, hi: f64) -> Result<f64> {
+    check_finite(name, x)?;
+    if lo > 0.0 && x <= 0.0 {
+        return Err(QuantError::InvalidInput {
+            name,
+            reason: "must be strictly positive",
+        });
+    }
+    if x < lo || x > hi {
+        return Err(QuantError::InvalidInput {
+            name,
+            reason: "outside the supported range (see quantkit::limits)",
+        });
+    }
+    Ok(x)
+}
