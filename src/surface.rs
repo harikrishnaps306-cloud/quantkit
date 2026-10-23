@@ -155,14 +155,40 @@ pub struct ButterflyViolation {
 /// ```
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct ArbitrageReport {
+    /// What was examined. A clean report only speaks for this scope.
+    pub scope: ArbitrageScope,
     /// Calendar-spread violations.
     pub calendar: Vec<CalendarViolation>,
     /// Butterfly / vertical-spread violations.
     pub butterfly: Vec<ButterflyViolation>,
 }
 
+/// Which points an [`ArbitrageReport`] covers. Neither scope is a proof of a
+/// globally arbitrage-free surface.
+///
+/// # Examples
+///
+/// ```
+/// use quantkit::surface::ArbitrageScope;
+/// assert_eq!(ArbitrageScope::default(), ArbitrageScope::QuotedNodes);
+/// ```
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ArbitrageScope {
+    /// Only the quoted (strike, expiry) nodes.
+    #[default]
+    QuotedNodes,
+    /// A finite grid of points of the *interpolated* surface.
+    SampledGrid {
+        /// Strikes sampled per expiry (uniform in log-moneyness).
+        strikes_per_expiry: usize,
+        /// Number of expiries sampled (quoted expiries plus interior points).
+        expiries: usize,
+    },
+}
+
 impl ArbitrageReport {
-    /// `true` when no violations were found.
+    /// `true` when no violations were found **within [`ArbitrageReport::scope`]**.
+    /// This does not certify the surface is arbitrage-free elsewhere.
     pub fn is_clean(&self) -> bool {
         self.calendar.is_empty() && self.butterfly.is_empty()
     }
@@ -401,8 +427,19 @@ impl VolSurface {
     ///   implied by the quoted vols must be non-increasing and convex in
     ///   strike.
     ///
-    /// This tests the quoted nodes only. A clean report does not prove the
-    /// interpolated surface is arbitrage-free between nodes.
+    /// * **Vertical spread:** the call-price slope in strike is bounded by
+    ///   the discount factor, `C(K1) - C(K2) <= e^{-rT} (K2 - K1)`.
+    ///
+    /// Forwards use `F(T) = S e^{(r - q) T}` and discounting uses `e^{-rT}`,
+    /// with the surface's own `rate` and `dividend_yield`. Calendar checks
+    /// compare total variance `sigma^2 T` at equal *forward* log-moneyness
+    /// `ln(K / F(T))`, which is the right comparison under deterministic
+    /// rates and dividends.
+    ///
+    /// **Scope: quoted nodes only** (`ArbitrageScope::QuotedNodes`). A clean
+    /// report does not prove the interpolated surface is arbitrage-free
+    /// between nodes (see [`VolSurface::check_arbitrage_sampled`]) and is
+    /// never a global guarantee.
     ///
     /// # Examples
     ///
@@ -418,7 +455,6 @@ impl VolSurface {
     /// ```
     pub fn check_arbitrage(&self) -> ArbitrageReport {
         let mut report = ArbitrageReport::default();
-        const W_TOL: f64 = 1e-12;
 
         for pair in self.smiles.windows(2) {
             let (a, b) = (&pair[0], &pair[1]);
@@ -474,29 +510,185 @@ impl VolSurface {
                         .unwrap_or(f64::NAN)
                 })
                 .collect();
-            for j in 1..calls.len() {
-                if calls[j] > calls[j - 1] + tol {
-                    report.butterfly.push(ButterflyViolation {
-                        expiry: s.expiry,
-                        strike: s.strikes[j],
-                        excess: calls[j] - calls[j - 1],
-                    });
+            butterfly_checks(
+                &s.strikes,
+                &calls,
+                (-self.rate * s.expiry).exp(),
+                s.expiry,
+                tol,
+                &mut report.butterfly,
+            );
+        }
+        report
+    }
+
+    /// Looks for static arbitrage on a **sampled grid of the interpolated
+    /// surface**, which also covers points between the quotes.
+    ///
+    /// Expiries are the quoted ones plus `extra_expiries_between` evenly
+    /// spaced interior expiries between each adjacent pair. At each expiry,
+    /// `strikes_per_expiry` strikes (at least 3) are spread uniformly in
+    /// log-moneyness over the range quoted at **every** expiry, so no
+    /// extrapolated points are examined. Calendar and butterfly/vertical
+    /// conditions are tested exactly as in [`VolSurface::check_arbitrage`].
+    ///
+    /// A clean result means no violation was found at the sampled points. It
+    /// does not prove the surface is arbitrage-free between them, in the
+    /// wings, or in the flat extrapolation region. If the quoted strike
+    /// ranges do not overlap, nothing is sampled and the report is empty.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use quantkit::surface::{ArbitrageScope, SurfaceSlice, VolSurface};
+    /// let s = VolSurface::new(100.0, 0.02, 0.0, vec![
+    ///     SurfaceSlice { expiry: 0.25, strikes: vec![90.0, 100.0, 110.0], vols: vec![0.26, 0.21, 0.23] },
+    ///     SurfaceSlice { expiry: 1.00, strikes: vec![80.0, 100.0, 120.0], vols: vec![0.27, 0.22, 0.24] },
+    /// ])?;
+    /// let r = s.check_arbitrage_sampled(50, 3);
+    /// assert!(matches!(r.scope, ArbitrageScope::SampledGrid { .. }));
+    /// # Ok::<(), quantkit::QuantError>(())
+    /// ```
+    pub fn check_arbitrage_sampled(
+        &self,
+        strikes_per_expiry: usize,
+        extra_expiries_between: usize,
+    ) -> ArbitrageReport {
+        let n = strikes_per_expiry.clamp(3, 10_000);
+        let m = extra_expiries_between.min(1_000);
+        let mut expiries = Vec::new();
+        for (i, sl) in self.smiles.iter().enumerate() {
+            expiries.push(sl.expiry);
+            if let Some(next) = self.smiles.get(i + 1) {
+                for j in 1..=m {
+                    expiries
+                        .push(sl.expiry + (next.expiry - sl.expiry) * j as f64 / (m + 1) as f64);
                 }
-                if j + 1 < calls.len() {
-                    let (k0, k1, k2) = (s.strikes[j - 1], s.strikes[j], s.strikes[j + 1]);
-                    let lam = (k2 - k1) / (k2 - k0);
-                    let bound = lam * calls[j - 1] + (1.0 - lam) * calls[j + 1];
-                    if calls[j] > bound + tol {
-                        report.butterfly.push(ButterflyViolation {
-                            expiry: s.expiry,
-                            strike: k1,
-                            excess: calls[j] - bound,
+            }
+        }
+        let mut report = ArbitrageReport {
+            scope: ArbitrageScope::SampledGrid {
+                strikes_per_expiry: n,
+                expiries: expiries.len(),
+            },
+            ..ArbitrageReport::default()
+        };
+        let k_lo = self
+            .smiles
+            .iter()
+            .map(|s| s.ks[0])
+            .fold(f64::NEG_INFINITY, f64::max);
+        let k_hi = self
+            .smiles
+            .iter()
+            .map(|s| s.ks[s.ks.len() - 1])
+            .fold(f64::INFINITY, f64::min);
+        if k_lo >= k_hi {
+            return report;
+        }
+        let ks: Vec<f64> = (0..n)
+            .map(|i| k_lo + (k_hi - k_lo) * i as f64 / (n - 1) as f64)
+            .collect();
+        let tol = 1e-10 * self.spot;
+        let mut previous: Option<(f64, Vec<f64>)> = None;
+        for &t in &expiries {
+            let fwd = self.forward(t);
+            let strikes: Vec<f64> = ks.iter().map(|k| fwd * k.exp()).collect();
+            let vols: Vec<f64> = strikes
+                .iter()
+                .map(|&k| self.vol(k, t).unwrap_or(f64::NAN))
+                .collect();
+            let w: Vec<f64> = vols.iter().map(|v| v * v * t).collect();
+            if let Some((t_prev, w_prev)) = &previous {
+                for i in 0..n {
+                    if w[i] < w_prev[i] - W_TOL {
+                        report.calendar.push(CalendarViolation {
+                            log_moneyness: ks[i],
+                            expiry_short: *t_prev,
+                            expiry_long: t,
+                            total_variance_short: w_prev[i],
+                            total_variance_long: w[i],
                         });
                     }
                 }
             }
+            let calls: Vec<f64> = strikes
+                .iter()
+                .zip(&vols)
+                .map(|(&k, &v)| {
+                    OptionParams::builder()
+                        .spot(self.spot)
+                        .strike(k)
+                        .rate(self.rate)
+                        .dividend_yield(self.dividend_yield)
+                        .volatility(v)
+                        .expiry(t)
+                        .build()
+                        .map(|p| bsm::price(&p, OptionType::Call))
+                        .unwrap_or(f64::NAN)
+                })
+                .collect();
+            butterfly_checks(
+                &strikes,
+                &calls,
+                (-self.rate * t).exp(),
+                t,
+                tol,
+                &mut report.butterfly,
+            );
+            previous = Some((t, w));
         }
         report
+    }
+}
+
+/// Tolerance on total variance for calendar comparisons.
+const W_TOL: f64 = 1e-12;
+
+/// Call-price no-arbitrage conditions across increasing `strikes` at one
+/// expiry, with `df = exp(-r T)`:
+///
+/// * non-increasing: `C(K2) <= C(K1)`
+/// * slope bound: `C(K1) - C(K2) <= df (K2 - K1)`
+/// * convexity: `C(K2) <= lambda C(K1) + (1 - lambda) C(K3)`
+///
+/// NaN prices never trigger a violation.
+fn butterfly_checks(
+    strikes: &[f64],
+    calls: &[f64],
+    df: f64,
+    expiry: f64,
+    tol: f64,
+    out: &mut Vec<ButterflyViolation>,
+) {
+    for j in 1..calls.len() {
+        if calls[j] > calls[j - 1] + tol {
+            out.push(ButterflyViolation {
+                expiry,
+                strike: strikes[j],
+                excess: calls[j] - calls[j - 1],
+            });
+        }
+        let slope_room = df * (strikes[j] - strikes[j - 1]);
+        if calls[j - 1] - calls[j] > slope_room + tol {
+            out.push(ButterflyViolation {
+                expiry,
+                strike: strikes[j],
+                excess: calls[j - 1] - calls[j] - slope_room,
+            });
+        }
+        if j + 1 < calls.len() {
+            let (k0, k1, k2) = (strikes[j - 1], strikes[j], strikes[j + 1]);
+            let lam = (k2 - k1) / (k2 - k0);
+            let bound = lam * calls[j - 1] + (1.0 - lam) * calls[j + 1];
+            if calls[j] > bound + tol {
+                out.push(ButterflyViolation {
+                    expiry,
+                    strike: k1,
+                    excess: calls[j] - bound,
+                });
+            }
+        }
     }
 }
 
@@ -647,6 +839,8 @@ pub struct SviFit {
     pub params: SviParams,
     /// Root-mean-square error in total variance.
     pub rmse: f64,
+    /// Largest absolute error in total variance over the input points.
+    pub max_abs_residual: f64,
 }
 
 /// Least-squares fit of the raw SVI smile to `(log-moneyness, total variance)`
@@ -770,9 +964,15 @@ pub fn fit_svi(ks: &[f64], ws: &[f64]) -> Result<SviFit> {
         sigma,
     )
     .map_err(|_| fail(violation))?;
+    let max_abs_residual = ks
+        .iter()
+        .zip(ws)
+        .map(|(&k, &w)| (params.total_variance(k) - w).abs())
+        .fold(0.0_f64, f64::max);
     Ok(SviFit {
         params,
         rmse: (sse / ks.len() as f64).sqrt(),
+        max_abs_residual,
     })
 }
 
@@ -949,6 +1149,67 @@ mod tests {
         )
         .unwrap();
         assert!(smooth.check_arbitrage().butterfly.is_empty());
+    }
+
+    #[test]
+    fn sampled_check_reports_scope_and_finds_violations() {
+        let flat = VolSurface::new(
+            100.0,
+            0.02,
+            0.0,
+            vec![
+                slice(0.25, &[80.0, 100.0, 120.0], &[0.2; 3]),
+                slice(1.0, &[80.0, 100.0, 120.0], &[0.2; 3]),
+            ],
+        )
+        .unwrap();
+        let r = flat.check_arbitrage_sampled(40, 3);
+        assert!(r.is_clean());
+        assert_eq!(
+            r.scope,
+            ArbitrageScope::SampledGrid {
+                strikes_per_expiry: 40,
+                expiries: 5
+            }
+        );
+        assert_eq!(flat.check_arbitrage().scope, ArbitrageScope::QuotedNodes);
+
+        // A vol spike between the outer strikes breaks convexity on the
+        // sampled interpolated grid as well.
+        let spiked = VolSurface::new(
+            100.0,
+            0.0,
+            0.0,
+            vec![slice(1.0, &[90.0, 100.0, 110.0], &[0.20, 0.50, 0.20])],
+        )
+        .unwrap();
+        assert!(!spiked.check_arbitrage_sampled(31, 0).butterfly.is_empty());
+
+        // Calendar violation found between quotes' common range.
+        let cal = VolSurface::new(
+            100.0,
+            0.0,
+            0.0,
+            vec![
+                slice(0.5, &[90.0, 100.0, 110.0], &[0.40; 3]),
+                slice(1.0, &[90.0, 100.0, 110.0], &[0.20; 3]),
+            ],
+        )
+        .unwrap();
+        assert!(!cal.check_arbitrage_sampled(11, 1).calendar.is_empty());
+
+        // Disjoint quoted ranges: nothing sampled, empty (not "clean by proof").
+        let disjoint = VolSurface::new(
+            100.0,
+            0.0,
+            0.0,
+            vec![
+                slice(0.5, &[50.0, 60.0], &[0.2, 0.2]),
+                slice(1.0, &[150.0, 160.0], &[0.2, 0.2]),
+            ],
+        )
+        .unwrap();
+        assert!(disjoint.check_arbitrage_sampled(11, 1).is_clean());
     }
 
     #[test]
