@@ -7,11 +7,13 @@
 //! * call = `S e^{-qT} N(d1) - K e^{-rT} N(d2)`
 //! * put = `K e^{-rT} N(-d2) - S e^{-qT} N(-d1)`
 //!
+//! These are not evaluated literally (that loses relative accuracy far out of
+//! the money); see [`crate::black`] for the stable evaluation actually used.
+//!
 //! Inputs are validated when [`OptionParams`] is built (see [`crate::limits`]),
 //! so pricing itself is infallible and, within that domain, always returns a
 //! finite, non-negative number.
 
-use crate::dist::norm_cdf;
 use crate::option::{OptionParams, OptionType};
 
 /// The BSM `d1` and `d2` terms.
@@ -40,17 +42,31 @@ pub(crate) fn d1_d2(p: &OptionParams) -> (f64, f64) {
 /// # Ok::<(), quantkit::QuantError>(())
 /// ```
 pub fn price(p: &OptionParams, kind: OptionType) -> f64 {
-    let (d1, d2) = d1_d2(p);
-    let disc_spot = p.spot() * libm::exp(-p.dividend_yield() * p.expiry());
-    let disc_strike = p.strike() * libm::exp(-p.rate() * p.expiry());
-    // Within the supported domain (see `limits`) the true price is >= 0; the
-    // difference of two nearly equal terms can come out as a rounding-sized
-    // negative number, which is clamped to zero.
-    let raw = match kind {
-        OptionType::Call => disc_spot * norm_cdf(d1) - disc_strike * norm_cdf(d2),
-        OptionType::Put => disc_strike * norm_cdf(-d2) - disc_spot * norm_cdf(-d1),
+    let t = p.expiry();
+    let disc_spot = p.spot() * libm::exp(-p.dividend_yield() * t);
+    let disc_strike = p.strike() * libm::exp(-p.rate() * t);
+    // x = ln(F / K), s = sigma sqrt(T). The out-of-the-money option (call if
+    // x <= 0, put if x >= 0) is `sqrt(Se^{-qT} Ke^{-rT}) * b(-|x|, s)`; an
+    // in-the-money option is its intrinsic value plus the out-of-the-money
+    // option on the other side (put-call parity), so nothing is ever
+    // computed as a difference of nearly equal large terms.
+    let x = libm::log(p.spot() / p.strike()) + (p.rate() - p.dividend_yield()) * t;
+    let s = p.volatility() * t.sqrt();
+    let xo = -x.abs();
+    let b = crate::black::normalised_otm(xo, s);
+    let otm = if b >= 1e-200 {
+        disc_spot.sqrt() * disc_strike.sqrt() * b
+    } else {
+        // `b` may be subnormal (few significant digits) even when the price is
+        // a normal number, so combine the scale and `b` in logarithms.
+        let ln_scale = 0.5 * (libm::log(disc_spot) + libm::log(disc_strike));
+        libm::exp(ln_scale + crate::black::ln_normalised_otm(xo, s))
     };
-    raw.max(0.0)
+    match kind {
+        OptionType::Call if x > 0.0 => disc_spot - disc_strike + otm,
+        OptionType::Put if x < 0.0 => disc_strike - disc_spot + otm,
+        _ => otm,
+    }
 }
 
 /// Shorthand for `price(p, OptionType::Call)`.

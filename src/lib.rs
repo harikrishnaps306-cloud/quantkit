@@ -35,6 +35,7 @@
 
 pub mod batch;
 pub mod binomial;
+pub mod black;
 pub mod bsm;
 pub mod dataset;
 pub mod detailed;

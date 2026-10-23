@@ -143,7 +143,8 @@ def test_detailed_implied_vol_has_diagnostics_and_distinct_failure_kinds():
     assert d["residual"][0] <= 1e-9 and d["vega"][0] > 0 and d["iterations"][0] >= d["newton_steps"][0]
     assert st[1] == qk.STATUS["PriceOutOfBounds"]
     assert st[2] == qk.STATUS["NonFinite"]
-    assert st[3] != qk.STATUS["Ok"] and np.isnan(d["vol"][3])
+    # A far out-of-the-money price of 1e-300 is solved in the log domain.
+    assert st[3] == qk.STATUS["Ok"] and np.isfinite(d["vol"][3]) and d["residual"][3] <= 1e-11 * 1e-300
     # Tightening the iteration budget turns a solvable row into a visible failure.
     tight = qk.implied_vol_detailed(np.array([base]), 100.0, 105.0, 0.03, 0.75, max_iterations=1, tolerance=1e-15)
     assert tight["status"][0] == qk.STATUS["NoConvergence"]
@@ -210,7 +211,7 @@ def test_make_dataset_is_reproducible_and_audited():
     assert price == pytest.approx(cols["price"][i], abs=1e-12)
     # Same checksum as the Rust regression-lock test.
     locked = qk.make_dataset(rows=200, seed=123)
-    assert locked["metadata"]["checksum"] == 5032231679998956232
+    assert locked["metadata"]["checksum"] == 13203027108969320594
     with pytest.raises(qk.QuantError):
         qk.make_dataset(rows=10, volatility=(1e-12, 1.0))
 

@@ -99,7 +99,7 @@ Array arguments must share a shape, scalars broadcast, and all-scalar calls retu
 
 * **Pricing:** BSM European; CRR tree (American/European, Bermudan with `steps` dates); seeded Monte Carlo European; Longstaff-Schwartz with independent training and evaluation paths.
 * **Greeks:** analytic BSM; central-difference numerical Greeks for any pricer.
-* **Implied volatility:** Newton with bisection fallback; precisely stated guarantee; diagnostics (residual, steps, vega).
+* **Implied volatility:** log-domain Newton on the normalised Black function with a bisection fallback, accurate into the far tails; precisely stated guarantee; diagnostics (residual, steps, vega).
 * **Surfaces:** build from vols or prices; interpolation; scoped arbitrage checks (quoted nodes, or a sampled grid); raw SVI with the Gatheral-Jacquier butterfly condition; SVI fitting with residual diagnostics.
 * **Risk:** historical VaR/CVaR, parametric VaR, Sharpe, Sortino, max drawdown, annualised volatility, with documented definitions.
 * **Batch:** plain batch functions; `detailed` per-row results with status codes; column-oriented fast paths; optional rayon parallelism; option grids.
@@ -122,7 +122,7 @@ Reference values: BSM against an independent `erf` closed form for the ATM zero-
 ## Known limitations
 
 * Supported input domain is bounded ([docs/NUMERICS.md](docs/NUMERICS.md) section 1); zero volatility and zero expiry are rejected rather than approximated.
-* Implied-volatility accuracy is conditioned by vega: the solver guarantees the *price residual*, not the recovered volatility. Very deep out-of-the-money prices (about `1e-300`) fail with `NoConvergence`. The solver is Newton/bisection, not Jaeckel's "Let's Be Rational".
+* Implied-volatility accuracy is conditioned by vega: the solver guarantees the *price residual*; out-of-the-money volatilities are recovered to about `1e-13` (checked against 150-digit prices down to `1e-290`), but in-the-money options priced almost at intrinsic value are inherently ill-conditioned. The solver uses the normalised-Black, log-domain formulation of "Let's Be Rational" with a simpler iteration (several evaluations, not two) and is not that algorithm.
 * Monte Carlo `std_error` is sampling error only. Plain Monte Carlo is unreliable for deep out-of-the-money payoffs. Longstaff-Schwartz is a Bermudan, low-biased estimate; policy error is not measured. Random streams are not provably disjoint (hash-seeded, no jump-ahead), and the generator is tested statistically, not against reference vectors.
 * Surface arbitrage reports cover only the stated scope; a clean report is never a global guarantee. No SSVI. SVI fits do not enforce the butterfly condition.
 * Datasets are closed-form European Black-Scholes labels: no smile, no noise, no American or exotic labels. The invariant report is a self-consistency check, not an independent validation.
@@ -131,7 +131,7 @@ Reference values: BSM against an independent `erf` closed form for the ATM zero-
 
 ## Roadmap
 
-Next candidates (see the final report in the repository history for reasoning): a faster, more tail-robust implied-volatility method; a published CI run on all three operating systems and a first PyPI/crates.io release once a repository exists; jump-ahead random streams; parallel dataset generation; American and smile-aware dataset labels. Not planned for now: live data, trading, an LLM tool server, bonds, portfolio optimisation, SSVI.
+Next candidates (see the final report in the repository history for reasoning): Jaeckel's rational starting guess and higher-order step to cut implied-volatility evaluations; a published CI run on all three operating systems and a first PyPI/crates.io release once a repository exists; jump-ahead random streams; parallel dataset generation; American and smile-aware dataset labels. Not planned for now: live data, trading, an LLM tool server, bonds, portfolio optimisation, SSVI.
 
 ## License
 

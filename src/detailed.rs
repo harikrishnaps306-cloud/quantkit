@@ -572,9 +572,11 @@ mod tests {
         assert_eq!(rows[1].status, StatusCode::PriceOutOfBounds);
         assert_eq!(rows[2].status, StatusCode::NonFinite);
         assert_eq!(rows[3].status, StatusCode::InvalidInput);
-        // A price the model cannot resolve fails visibly instead of returning garbage.
-        assert_ne!(rows[4].status, StatusCode::Ok);
-        assert!(rows[4].vol.is_nan());
+        // A price of 1e-300 on a far out-of-the-money call is solvable in the
+        // log domain, and the residual is reported relative to that tiny price.
+        assert_eq!(rows[4].status, StatusCode::Ok);
+        assert!(rows[4].vol.is_finite() && rows[4].vol > 0.0);
+        assert!(rows[4].residual <= 1e-11 * 1e-300);
     }
 
     #[test]

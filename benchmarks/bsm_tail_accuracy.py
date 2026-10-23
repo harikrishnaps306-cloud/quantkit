@@ -5,10 +5,13 @@ Requires: pip install mpmath, and the quantkit Python wheel.
 
     python benchmarks/bsm_tail_accuracy.py
 
-For an out-of-the-money call the price is a difference of two nearly equal
-terms, S e^{-qT} N(d1) - K e^{-rT} N(d2), so relative accuracy degrades as
-|d1| grows even though each term is accurate. The absolute error stays
-negligible (many orders of magnitude below the spot).
+Written naively, an out-of-the-money call price is a difference of two nearly
+equal terms, S e^{-qT} N(d1) - K e^{-rT} N(d2), whose relative accuracy
+collapses as |d1| grows (about 1.4e-10 at |d1| = 30 for that formula).
+quantkit evaluates the price with the stable method in quantkit::black; this
+script measures the end-to-end result. The remaining error is close to the
+conditioning limit of rounded f64 inputs (roughly eps * d^2); at |d1| = 38 the
+price is subnormal and the error is the spacing of subnormal numbers.
 """
 
 import math

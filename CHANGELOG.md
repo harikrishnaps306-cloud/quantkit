@@ -13,6 +13,7 @@ differences from the earlier 0.2.0 development snapshot (commit `02a6393`), list
 so that code written against it can be migrated.
 
 ### Added
+- `black` module: the normalised Black function evaluated stably far out of the money (`normalised_otm`, `ln_normalised_otm`, `ln_normalised_vega`).
 - `limits`: the supported input domain, enforced by `OptionParams`, `Contract`, `VolSurface::new` and `dataset`.
 - `StatusCode` and `QuantError::status_code()`; `detailed` module with per-row `PriceRow`, `GreeksRow`, `IvRow`, `McRow` and column-oriented `price_columns` / `greeks_columns`.
 - `implied_vol::solve_detailed` returning `IvSolution` (residual, Newton/bisection step counts, vega).
@@ -23,6 +24,8 @@ so that code written against it can be migrated.
 - `docs/NUMERICS.md`, `docs/BENCHMARKS.md`, `docs/market-gap-report.md`; throughput benchmarks; independent-reference, domain-boundary and no-panic test suites.
 
 ### Changed (breaking relative to the earlier snapshot)
+- `bsm::price` uses the stable normalised-Black evaluation (relative error at `|d1| = 30` fell from 1.4e-10 to 1.5e-13); prices change in the last digits, so the dataset checksum regression lock was re-recorded.
+- The implied-volatility solver is rewritten (log-domain Newton on the normalised Black function). Public signatures are unchanged. Prices as small as `1e-300` now solve instead of failing with `NoConvergence`.
 - Inputs outside `quantkit::limits` are rejected (for example volatility below `1e-8`, spot above `1e12`, `|rate| * expiry > 500`).
 - `bsm::price` clamps rounding-sized negative results to zero.
 - Implied volatility: attainable-range failures are `PriceOutOfBounds` (previously some were `NoConvergence`); the documentation no longer claims unconditional convergence.

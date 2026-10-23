@@ -1,33 +1,37 @@
 //! Implied volatility under Black-Scholes-Merton.
 //!
-//! # What the solver guarantees
+//! # Method
 //!
-//! The solver brackets the root in `[limits::MIN_VOL, limits::MAX_VOL]`, then
-//! runs Newton-Raphson, falling back to bisection whenever a Newton step is
-//! unusable (vanishing vega, or a step outside the current bracket).
+//! The price is split into intrinsic value and time value. The time value,
+//! divided by `sqrt(Se^{-qT} Ke^{-rT})`, is the normalised Black function
+//! `b(x, s)` of [`crate::black`], with `x = ln(F/K)` and `s = sigma sqrt(T)`.
+//! The solver finds `s` from `ln b(-|x|, s) = ln(time value / scale)` with a
+//! bracketed Newton iteration that falls back to geometric bisection. Working
+//! in logarithms keeps tiny prices (down to the smallest `f64`) as well
+//! conditioned as ordinary ones, and `b` is evaluated by a numerically stable
+//! method far out of the money, so there is no loss of precision in the tails.
+//! This resembles Jaeckel's "Let's Be Rational" in its variables but is a
+//! simpler iteration (no rational starting guess, no third-order step).
+//!
+//! # What the solver guarantees
 //!
 //! * **On `Ok`**: the returned volatility lies inside the supported range
 //!   and the model price at that volatility is within
-//!   `max(tolerance, 8 eps) * market_price` of the market price (absolute
-//!   price residual, reported in [`IvSolution::residual`]).
-//! * **It does not promise** that the volatility is accurate to the same
-//!   relative tolerance. Where vega is small (deep in or out of the money,
-//!   very short expiry) many volatilities reprice the option equally well;
-//!   the volatility error is roughly `residual / vega`, and
-//!   [`IvSolution::vega`] is provided so you can judge that.
+//!   `(max(tolerance, 8 eps) + 4 eps) * market_price` of the market price
+//!   (absolute price residual, reported in [`IvSolution::residual`]).
+//! * **Recovery of the generating volatility** is accurate to a few
+//!   `1e-13` for out-of-the-money prices at any depth, but only as accurate as
+//!   `residual / vega` where vega is small, which includes in-the-money options
+//!   priced almost at intrinsic value. [`IvSolution::vega`] is provided so you
+//!   can judge that.
 //! * **On `Err`**: no volatility is returned. The cause is one of: price
 //!   outside the attainable range ([`QuantError::PriceOutOfBounds`]), or the
 //!   iteration budget or floating-point resolution was exhausted before the
 //!   tolerance was met ([`QuantError::NoConvergence`], which carries the
 //!   iteration count and last residual).
-//!
-//! Bisection on a bracket that contains the root halves its width every
-//! step, so within the default budget a failure indicates a price that the
-//! model cannot resolve in double precision (for example, a call worth
-//! `1e-300`), not a slow algorithm.
 
+use crate::black::{ln_normalised_otm, ln_normalised_vega};
 use crate::bsm;
-use crate::dist::norm_pdf;
 use crate::error::{check_finite, QuantError, Result};
 use crate::option::{Contract, OptionType};
 
@@ -188,8 +192,10 @@ pub fn solve_detailed(
         });
     }
 
-    let disc_spot = contract.spot() * (-contract.dividend_yield() * contract.expiry()).exp();
-    let disc_strike = contract.strike() * (-contract.rate() * contract.expiry()).exp();
+    let t = contract.expiry();
+    let sqrt_t = t.sqrt();
+    let disc_spot = contract.spot() * libm::exp(-contract.dividend_yield() * t);
+    let disc_strike = contract.strike() * libm::exp(-contract.rate() * t);
     let (lower, upper) = match kind {
         OptionType::Call => ((disc_spot - disc_strike).max(0.0), disc_spot),
         OptionType::Put => ((disc_strike - disc_spot).max(0.0), disc_strike),
@@ -207,83 +213,97 @@ pub fn solve_detailed(
         });
     }
 
-    let tol = config.tolerance.max(8.0 * f64::EPSILON) * market_price;
-    let sqrt_t = contract.expiry().sqrt();
-    let vega_at = |vol: f64| -> Result<f64> {
-        let params = contract.with_volatility(vol)?;
-        let d1 = crate::bsm::d1_d2(&params).0;
-        Ok(contract.spot()
-            * (-contract.dividend_yield() * contract.expiry()).exp()
-            * norm_pdf(d1)
-            * sqrt_t)
-    };
+    // Work with the out-of-the-money part of the price (time value), in the
+    // normalised variables of `crate::black`: x = ln(F/K), s = sigma sqrt(T),
+    // and solve  ln b(-|x|, s) = ln(time value / scale)  for s. Because the
+    // equation is in logarithms, a price of 1e-300 is as well conditioned as a
+    // price of 1, and b never underflows.
+    let x = libm::log(contract.spot() / contract.strike())
+        + (contract.rate() - contract.dividend_yield()) * t;
+    let scale = disc_spot.sqrt() * disc_strike.sqrt();
+    let time_value = market_price - lower;
+    let ln_beta = libm::log(time_value) - libm::log(scale);
+    let xo = -x.abs();
 
-    // Bracket: price is increasing in volatility, and p_lo < price < p_hi.
-    let (mut lo, mut hi) = (MIN_VOL, MAX_VOL);
+    let tol = config.tolerance.max(8.0 * f64::EPSILON);
+    let (mut lo, mut hi) = (MIN_VOL * sqrt_t, MAX_VOL * sqrt_t);
+    let mut s = initial_guess(xo, ln_beta).clamp(lo, hi);
 
-    // Manaster-Koehler style starting point, clamped into the bracket.
-    let fwd_log = (contract.spot() / contract.strike()).ln()
-        + (contract.rate() - contract.dividend_yield()) * contract.expiry();
-    let mut vol = (2.0 * fwd_log.abs() / contract.expiry())
-        .sqrt()
-        .clamp(0.1, 5.0)
-        .clamp(lo, hi);
-
-    let (mut newton_steps, mut bisection_steps) = (0usize, 0usize);
-    let mut residual = f64::INFINITY;
-    for iteration in 1..=config.max_iterations {
-        let diff = model(vol)? - market_price;
-        residual = diff.abs();
-        if residual <= tol {
-            return Ok(IvSolution {
-                vol,
+    let finish = |s: f64, iterations: usize, newton: usize| -> Result<IvSolution> {
+        let vol = (s / sqrt_t).clamp(MIN_VOL, MAX_VOL);
+        let residual = (model(vol)? - market_price).abs();
+        if residual > (tol + 4.0 * f64::EPSILON) * market_price {
+            return Err(QuantError::NoConvergence {
+                iterations,
                 residual,
-                iterations: newton_steps + bisection_steps,
-                newton_steps,
-                bisection_steps,
-                vega: vega_at(vol)?,
             });
         }
-        if diff > 0.0 {
-            hi = vol;
+        let s_eff = vol * sqrt_t;
+        Ok(IvSolution {
+            vol,
+            residual,
+            iterations,
+            newton_steps: newton,
+            bisection_steps: iterations - newton,
+            vega: scale * libm::exp(ln_normalised_vega(xo, s_eff)) * sqrt_t,
+        })
+    };
+
+    let (mut newton_steps, mut bisection_steps) = (0usize, 0usize);
+    let mut last = f64::INFINITY;
+    for _ in 0..config.max_iterations {
+        let ln_b = ln_normalised_otm(xo, s);
+        let f = ln_b - ln_beta;
+        last = f.abs();
+        if last <= tol {
+            return finish(s, newton_steps + bisection_steps, newton_steps);
+        }
+        if f > 0.0 {
+            hi = s;
         } else {
-            lo = vol;
+            lo = s;
         }
 
-        // Newton step; fall back to bisection when it is not trustworthy.
-        let vega = vega_at(vol)?;
-        let newton = vol - diff / vega;
-        if vega > 1e-14 && newton.is_finite() && newton > lo && newton < hi {
-            vol = newton;
+        // Newton on f(s) = ln b(s) - ln beta; f' = (db/ds) / b.
+        let slope = libm::exp(ln_normalised_vega(xo, s) - ln_b);
+        let candidate = s - f / slope;
+        if slope.is_finite() && slope > 0.0 && candidate > lo && candidate < hi {
+            s = candidate;
             newton_steps += 1;
         } else {
-            vol = 0.5 * (lo + hi);
+            s = (lo * hi).sqrt(); // geometric bisection: s spans many decades
             bisection_steps += 1;
         }
 
-        if hi - lo <= f64::EPSILON * hi {
+        if hi - lo <= 4.0 * f64::EPSILON * hi {
             // The bracket cannot shrink further in double precision.
-            let diff = model(vol)? - market_price;
-            if diff.abs() <= tol {
-                return Ok(IvSolution {
-                    vol,
-                    residual: diff.abs(),
-                    iterations: newton_steps + bisection_steps,
-                    newton_steps,
-                    bisection_steps,
-                    vega: vega_at(vol)?,
-                });
+            let f = ln_normalised_otm(xo, s) - ln_beta;
+            if f.abs() <= tol {
+                return finish(s, newton_steps + bisection_steps, newton_steps);
             }
             return Err(QuantError::NoConvergence {
-                iterations: iteration,
-                residual: diff.abs(),
+                iterations: newton_steps + bisection_steps,
+                residual: f.abs() * time_value,
             });
         }
     }
     Err(QuantError::NoConvergence {
         iterations: config.max_iterations,
-        residual,
+        residual: last * time_value,
     })
+}
+
+/// Starting point for the root search: the at-the-money small-`s` relation
+/// `b ~ s / sqrt(2 pi)` combined with the far-tail relation
+/// `ln b ~ -x^2 / (2 s^2)`. It only needs to land in the right decade; the
+/// bracket and bisection fallback guarantee progress from anywhere.
+fn initial_guess(xo: f64, ln_beta: f64) -> f64 {
+    let atm = (2.0 * std::f64::consts::PI).sqrt() * libm::exp(ln_beta);
+    if xo == 0.0 {
+        return atm.max(MIN_VOL);
+    }
+    let tail = xo.abs() / (-2.0 * ln_beta).max(1e-8).sqrt();
+    (atm * atm + tail * tail).sqrt()
 }
 
 #[cfg(test)]
