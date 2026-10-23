@@ -56,9 +56,10 @@ pub enum QuantError {
         residual: f64,
     },
 
-    /// A market price lies outside the no-arbitrage bounds, so no
-    /// volatility can reproduce it.
-    #[error("price {price} is outside the no-arbitrage range [{lower}, {upper}]")]
+    /// A market price lies outside the attainable range (the no-arbitrage
+    /// bounds, narrowed to what the supported volatility range can produce),
+    /// so no volatility can reproduce it.
+    #[error("price {price} is outside the attainable range [{lower}, {upper}]")]
     PriceOutOfBounds {
         /// The supplied price.
         price: f64,

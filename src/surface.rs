@@ -254,6 +254,18 @@ impl VolSurface {
                     reason: "must be strictly increasing",
                 });
             }
+            // Reuse the option-domain validation (limits, rate * expiry bound)
+            // for every node, so later pricing can never fail.
+            for (&k, &v) in sl.strikes.iter().zip(&sl.vols) {
+                OptionParams::builder()
+                    .spot(spot)
+                    .strike(k)
+                    .rate(rate)
+                    .dividend_yield(dividend_yield)
+                    .volatility(v)
+                    .expiry(sl.expiry)
+                    .build()?;
+            }
             let fwd = spot * ((rate - dividend_yield) * sl.expiry).exp();
             let ks = sl.strikes.iter().map(|&k| (k / fwd).ln()).collect();
             smiles.push(Smile {
@@ -447,8 +459,10 @@ impl VolSurface {
                 .iter()
                 .zip(&s.vols)
                 .map(|(&k, &v)| {
-                    // Inputs were validated in `new`, so this cannot fail.
-                    let p = OptionParams::builder()
+                    // Every node was validated against the supported domain in
+                    // `new`; a NaN here (which can never trigger a violation)
+                    // is only a defence against future changes.
+                    OptionParams::builder()
                         .spot(self.spot)
                         .strike(k)
                         .rate(self.rate)
@@ -456,8 +470,8 @@ impl VolSurface {
                         .volatility(v)
                         .expiry(s.expiry)
                         .build()
-                        .expect("validated surface inputs");
-                    bsm::price(&p, OptionType::Call)
+                        .map(|p| bsm::price(&p, OptionType::Call))
+                        .unwrap_or(f64::NAN)
                 })
                 .collect();
             for j in 1..calls.len() {

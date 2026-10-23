@@ -6,3 +6,4 @@
 # everyone who runs the test benefits from these saved cases.
 cc b76eae5646f9bec21c256a4aa60e4cdcbd3cc50c7cde675fe50d603205b156d5 # shrinks to paths = 18446744073709551615, steps = 18446744073709551615
 cc 821d3f4121c8d9b6799a652cde64ff2b5aaa270098ae7c7a4e8809e25a70dfcb # shrinks to s = 52.9748678024878, k = 1.907592880008154e-129, r = 0.0, q = 0.0, v = 403.9655642964784, t = 2.220446049250313e-16, price = 0.0, steps = 18446744073709551615
+cc 69f89338b8928c6c6fd850108fe8983aa6d698a924c6bbeceb88341cb319ea44 # shrinks to spot = 2.2250738585072014e-308, rate = 0.0, expiry = 2.2250738585072014e-308, strikes = [2.2250738585072014e-308], vols = [2.2250738585072014e-308], q_strike = 0.0, q_expiry = 0.0, ks = [], ws = [], a = 0.0, b = 0.0, rho = 0.0, m = 0.0, sigma = 0.0

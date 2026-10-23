@@ -1,20 +1,37 @@
 //! Implied volatility under Black-Scholes-Merton.
 //!
-//! The solver brackets the root, then runs Newton-Raphson. Whenever a Newton
-//! step is unusable (vega is vanishing, or the step would leave the bracket)
-//! it falls back to bisection, which is guaranteed to converge. If the
-//! tolerance is still not reached within the iteration budget the solver
-//! returns [`QuantError::NoConvergence`] rather than a bad number.
+//! # What the solver guarantees
+//!
+//! The solver brackets the root in `[limits::MIN_VOL, limits::MAX_VOL]`, then
+//! runs Newton-Raphson, falling back to bisection whenever a Newton step is
+//! unusable (vanishing vega, or a step outside the current bracket).
+//!
+//! * **On `Ok`**: the returned volatility lies inside the supported range
+//!   and the model price at that volatility is within
+//!   `max(tolerance, 8 eps) * market_price` of the market price (absolute
+//!   price residual, reported in [`IvSolution::residual`]).
+//! * **It does not promise** that the volatility is accurate to the same
+//!   relative tolerance. Where vega is small (deep in or out of the money,
+//!   very short expiry) many volatilities reprice the option equally well;
+//!   the volatility error is roughly `residual / vega`, and
+//!   [`IvSolution::vega`] is provided so you can judge that.
+//! * **On `Err`**: no volatility is returned. The cause is one of: price
+//!   outside the attainable range ([`QuantError::PriceOutOfBounds`]), or the
+//!   iteration budget or floating-point resolution was exhausted before the
+//!   tolerance was met ([`QuantError::NoConvergence`], which carries the
+//!   iteration count and last residual).
+//!
+//! Bisection on a bracket that contains the root halves its width every
+//! step, so within the default budget a failure indicates a price that the
+//! model cannot resolve in double precision (for example, a call worth
+//! `1e-300`), not a slow algorithm.
 
 use crate::bsm;
 use crate::dist::norm_pdf;
 use crate::error::{check_finite, QuantError, Result};
 use crate::option::{Contract, OptionType};
 
-/// Largest volatility the bracket search will try (100,000%).
-const MAX_VOL: f64 = 1_000.0;
-/// Smallest volatility the bracket starts at.
-const MIN_VOL: f64 = 1e-9;
+use crate::limits::{MAX_VOL, MIN_VOL};
 
 /// Solver settings.
 ///
@@ -50,7 +67,8 @@ impl Default for SolverConfig {
 ///
 /// * [`QuantError::NonFinite`] if `market_price` is NaN or infinite.
 /// * [`QuantError::PriceOutOfBounds`] if the price is at or outside the
-///   no-arbitrage range, so no positive volatility reproduces it.
+///   attainable range (no-arbitrage bounds, further narrowed to the prices
+///   reachable with volatility in `[limits::MIN_VOL, limits::MAX_VOL]`).
 /// * [`QuantError::NoConvergence`] if the tolerance is not reached.
 ///
 /// # Examples
@@ -98,6 +116,64 @@ pub fn solve_with(
     market_price: f64,
     config: SolverConfig,
 ) -> Result<f64> {
+    solve_detailed(contract, kind, market_price, config).map(|s| s.vol)
+}
+
+/// Diagnostics for a successful solve.
+///
+/// # Examples
+///
+/// ```
+/// use quantkit::implied_vol::{solve_detailed, SolverConfig};
+/// use quantkit::{OptionParams, OptionType};
+///
+/// let c = OptionParams::builder().spot(21.0).strike(20.0).rate(0.10).expiry(0.25).build_contract()?;
+/// let s = solve_detailed(&c, OptionType::Call, 1.875, SolverConfig::default())?;
+/// assert!(s.residual < 1e-9 && s.vega > 0.0);
+/// assert_eq!(s.iterations, s.newton_steps + s.bisection_steps);
+/// # Ok::<(), quantkit::QuantError>(())
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct IvSolution {
+    /// The implied volatility.
+    pub vol: f64,
+    /// Absolute difference between the model price at `vol` and the market price.
+    pub residual: f64,
+    /// Update steps taken before the tolerance was met (`newton_steps + bisection_steps`).
+    pub iterations: usize,
+    /// How many of those were Newton steps.
+    pub newton_steps: usize,
+    /// How many were bisection steps (fallback).
+    pub bisection_steps: usize,
+    /// BSM vega at `vol`. Volatility error is roughly `residual / vega`.
+    pub vega: f64,
+}
+
+/// Like [`solve_with`], returning [`IvSolution`] diagnostics.
+///
+/// # Errors
+///
+/// As [`solve_with`].
+///
+/// # Examples
+///
+/// ```
+/// use quantkit::implied_vol::{solve_detailed, SolverConfig};
+/// use quantkit::{OptionParams, OptionType, QuantError};
+///
+/// let c = OptionParams::builder().spot(100.0).strike(100.0).rate(0.05).expiry(1.0).build_contract()?;
+/// // A call cannot be worth more than the spot.
+/// let err = solve_detailed(&c, OptionType::Call, 150.0, SolverConfig::default()).unwrap_err();
+/// assert!(matches!(err, QuantError::PriceOutOfBounds { .. }));
+/// # Ok::<(), QuantError>(())
+/// ```
+pub fn solve_detailed(
+    contract: &Contract,
+    kind: OptionType,
+    market_price: f64,
+    config: SolverConfig,
+) -> Result<IvSolution> {
     check_finite("market_price", market_price)?;
     if !(config.tolerance > 0.0 && config.tolerance.is_finite()) {
         return Err(QuantError::InvalidInput {
@@ -118,46 +194,55 @@ pub fn solve_with(
         OptionType::Call => ((disc_spot - disc_strike).max(0.0), disc_spot),
         OptionType::Put => ((disc_strike - disc_spot).max(0.0), disc_strike),
     };
-    if market_price <= lower || market_price >= upper {
+    let model = |vol: f64| -> Result<f64> { Ok(bsm::price(&contract.with_volatility(vol)?, kind)) };
+
+    // The attainable range inside the supported volatility domain.
+    let (p_lo, p_hi) = (model(MIN_VOL)?, model(MAX_VOL)?);
+    if market_price <= lower || market_price >= upper || market_price < p_lo || market_price > p_hi
+    {
         return Err(QuantError::PriceOutOfBounds {
             price: market_price,
-            lower,
-            upper,
+            lower: lower.max(p_lo),
+            upper: upper.min(p_hi),
         });
     }
 
     let tol = config.tolerance.max(8.0 * f64::EPSILON) * market_price;
-    let model = |vol: f64| -> Result<f64> { Ok(bsm::price(&contract.with_volatility(vol)?, kind)) };
     let sqrt_t = contract.expiry().sqrt();
+    let vega_at = |vol: f64| -> Result<f64> {
+        let params = contract.with_volatility(vol)?;
+        let d1 = crate::bsm::d1_d2(&params).0;
+        Ok(contract.spot()
+            * (-contract.dividend_yield() * contract.expiry()).exp()
+            * norm_pdf(d1)
+            * sqrt_t)
+    };
 
-    // Bracket the root: price is increasing in volatility.
-    let mut lo = MIN_VOL;
-    let mut hi = 1.0;
-    while model(hi)? < market_price {
-        lo = hi;
-        hi *= 2.0;
-        if hi > MAX_VOL {
-            return Err(QuantError::NoConvergence {
-                iterations: 0,
-                residual: market_price - model(MAX_VOL)?,
-            });
-        }
-    }
+    // Bracket: price is increasing in volatility, and p_lo < price < p_hi.
+    let (mut lo, mut hi) = (MIN_VOL, MAX_VOL);
 
     // Manaster-Koehler style starting point, clamped into the bracket.
     let fwd_log = (contract.spot() / contract.strike()).ln()
         + (contract.rate() - contract.dividend_yield()) * contract.expiry();
     let mut vol = (2.0 * fwd_log.abs() / contract.expiry())
         .sqrt()
-        .clamp(0.1, 5.0);
-    vol = vol.clamp(lo, hi);
+        .clamp(0.1, 5.0)
+        .clamp(lo, hi);
 
+    let (mut newton_steps, mut bisection_steps) = (0usize, 0usize);
     let mut residual = f64::INFINITY;
     for iteration in 1..=config.max_iterations {
         let diff = model(vol)? - market_price;
         residual = diff.abs();
         if residual <= tol {
-            return Ok(vol);
+            return Ok(IvSolution {
+                vol,
+                residual,
+                iterations: newton_steps + bisection_steps,
+                newton_steps,
+                bisection_steps,
+                vega: vega_at(vol)?,
+            });
         }
         if diff > 0.0 {
             hi = vol;
@@ -166,23 +251,28 @@ pub fn solve_with(
         }
 
         // Newton step; fall back to bisection when it is not trustworthy.
-        let params = contract.with_volatility(vol)?;
-        let d1 = crate::bsm::d1_d2(&params).0;
-        let vega = contract.spot()
-            * (-contract.dividend_yield() * contract.expiry()).exp()
-            * norm_pdf(d1)
-            * sqrt_t;
+        let vega = vega_at(vol)?;
         let newton = vol - diff / vega;
-        vol = if vega > 1e-14 && newton.is_finite() && newton > lo && newton < hi {
-            newton
+        if vega > 1e-14 && newton.is_finite() && newton > lo && newton < hi {
+            vol = newton;
+            newton_steps += 1;
         } else {
-            0.5 * (lo + hi)
-        };
+            vol = 0.5 * (lo + hi);
+            bisection_steps += 1;
+        }
 
         if hi - lo <= f64::EPSILON * hi {
+            // The bracket cannot shrink further in double precision.
             let diff = model(vol)? - market_price;
             if diff.abs() <= tol {
-                return Ok(vol);
+                return Ok(IvSolution {
+                    vol,
+                    residual: diff.abs(),
+                    iterations: newton_steps + bisection_steps,
+                    newton_steps,
+                    bisection_steps,
+                    vega: vega_at(vol)?,
+                });
             }
             return Err(QuantError::NoConvergence {
                 iterations: iteration,
