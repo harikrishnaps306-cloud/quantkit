@@ -11,3 +11,9 @@ python/target/
 # Library crate: the lockfile is not committed (its format and pinned versions would
 # conflict with the declared MSRV); CI resolves dependencies itself.
 /Cargo.lock
+
+# Build outputs
+/dist/
+/dist-sdist/
+/.venv*/
+/clean-tests/

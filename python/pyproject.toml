@@ -8,7 +8,7 @@ description = "Options pricing, Greeks, implied volatility, Monte Carlo, vol sur
 readme = "README.md"
 requires-python = ">=3.9"
 license = "MIT OR Apache-2.0"
-license-files = ["LICENSE-MIT", "LICENSE-APACHE"]
+license-files = ["LICENSE-MIT.txt", "LICENSE-APACHE.txt"]
 authors = [{ name = "Harikrishna Paykatt Valliaparambil" }]
 dependencies = ["numpy>=1.21"]
 classifiers = [
@@ -21,3 +21,7 @@ dynamic = ["version"]
 module-name = "quantkit._quantkit"
 python-source = "."
 features = ["pyo3/extension-module"]
+# python/LICENSE-*.txt are copies of the repository-root licences. They carry a .txt
+# suffix so that, in an sdist (which also contains the root crate's LICENSE-MIT and
+# LICENSE-APACHE at its top level), the file names do not collide, which maturin
+# rejects.

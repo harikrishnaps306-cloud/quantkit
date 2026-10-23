@@ -1,19 +1,37 @@
 name: CI
 
-# Configured but, as of this commit, never executed on GitHub. Every step below
-# mirrors a command that was run locally on Windows; nothing here has been
-# observed passing on Linux or macOS.
+# STATUS: configured but NOT yet executed on GitHub. The commands below were run
+# locally on Windows (see docs/release-readiness.md for exactly which); nothing
+# here has been observed passing on Linux or macOS, and a YAML file that parses
+# is not evidence that a job works.
+#
+# Triggers: a push to `main` or `master`; any pull request; and manual runs from
+# the Actions tab (workflow_dispatch), which is how to validate a branch before
+# opening a pull request. Tags and other branches do not trigger it on push.
 
 on:
   push:
-    branches: [main]
+    branches: [main, master]
   pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: "-D warnings"
 
 jobs:
+  metadata:
+    name: version consistency
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Rust crate, Python crate and CHANGELOG agree on the version
+        run: python3 .github/scripts/check_versions.py
+
   rust:
     name: rust (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
@@ -56,33 +74,61 @@ jobs:
           RUSTDOCFLAGS: "-D warnings"
       - name: benches compile
         run: cargo bench --no-run --all-features
+      - name: examples run
+        run: |
+          for e in price_with_greeks var_from_returns monte_carlo_and_surface ml_dataset; do
+            cargo run --example "$e" > /dev/null
+          done
+      - name: package contents and packaged-source build
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          cargo package --list
+          cargo package
 
   msrv:
-    name: msrv (1.74)
+    name: msrv (Rust 1.74)
     runs-on: ubuntu-latest
     env:
-      RUSTFLAGS: ""  # lints differ between toolchains; compile errors still fail
+      # Lints differ between toolchains; compile errors still fail the job.
+      RUSTFLAGS: ""
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - uses: dtolnay/rust-toolchain@1.74
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.74"
+      # Cargo.lock is deliberately not committed. A plain resolve would pick
+      # dependency releases that need a newer compiler, so resolve with the
+      # Rust-version-aware strategy (needs Cargo >= 1.84, hence `+stable`). The
+      # lockfile it writes uses format version 3, which Cargo 1.74 can read.
       - name: resolve dependencies compatible with the declared rust-version
         run: |
           rm -f Cargo.lock
           CARGO_RESOLVER_INCOMPATIBLE_RUST_VERSIONS=fallback cargo +stable generate-lockfile
-      - name: check library, all features
-        run: cargo +1.74 check --lib --all-features
-      - name: unit tests, all features
-        run: cargo +1.74 test --lib --all-features
+          head -3 Cargo.lock
+      - name: library, default features
+        run: cargo +1.74 check --lib
+      - name: all targets (tests, benches, examples), all features
+        run: cargo +1.74 check --all-targets --all-features
+      - name: tests and doctests, all features
+        run: |
+          cargo +1.74 test --all-targets --all-features
+          cargo +1.74 test --doc --all-features
 
   python:
-    name: python ${{ matrix.python }} (${{ matrix.os }})
+    name: python ${{ matrix.python }} / ${{ matrix.numpy }} (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
-        python: ["3.9", "3.11", "3.13"]
+        include:
+          - { os: ubuntu-latest, python: "3.9", numpy: "numpy==1.21.6" }
+          - { os: ubuntu-latest, python: "3.11", numpy: "numpy==1.26.4" }
+          - { os: ubuntu-latest, python: "3.13", numpy: "numpy" }
+          - { os: windows-latest, python: "3.9", numpy: "numpy==1.21.6" }
+          - { os: windows-latest, python: "3.13", numpy: "numpy" }
+          - { os: macos-latest, python: "3.11", numpy: "numpy==1.26.4" }
+          - { os: macos-latest, python: "3.13", numpy: "numpy" }
     defaults:
       run:
         shell: bash
@@ -103,10 +149,47 @@ jobs:
         run: |
           python -m pip install maturin
           maturin build --release --manifest-path python/Cargo.toml -o dist
-      - name: install the wheel in a clean virtualenv and run the tests against it
+      - name: install the wheel in a clean virtualenv with the pinned NumPy, and test it
         run: |
           python -m venv .venv-clean
-          if [ -d .venv-clean/Scripts ]; then PY=.venv-clean/Scripts/python; else PY=.venv-clean/bin/python; fi
-          $PY -m pip install dist/*.whl pytest
+          if [ -d .venv-clean/Scripts ]; then PY="$PWD/.venv-clean/Scripts/python"; else PY="$PWD/.venv-clean/bin/python"; fi
+          "$PY" -m pip install dist/*.whl pytest "${{ matrix.numpy }}"
           mkdir clean-tests && cp python/tests/*.py clean-tests/
-          cd clean-tests && ../$PY -m pytest -q
+          cd clean-tests
+          # The tests must import the installed wheel, not a source checkout.
+          "$PY" -c "import sys, numpy, quantkit; print(sys.version); print('numpy', numpy.__version__); print(quantkit.__file__); assert 'site-packages' in quantkit.__file__.replace(chr(92), '/'), quantkit.__file__"
+          "$PY" -m pytest -q -p no:cacheprovider
+
+  sdist:
+    name: python sdist (ubuntu)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: python
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: build the source distribution
+        run: |
+          python -m pip install maturin
+          maturin sdist --manifest-path python/Cargo.toml -o dist-sdist
+      - name: archive contains the sources and licences, and no build outputs
+        run: |
+          tar tzf dist-sdist/*.tar.gz > sdist-files.txt
+          grep -q 'LICENSE-MIT$' sdist-files.txt
+          grep -q 'LICENSE-APACHE$' sdist-files.txt
+          grep -q 'src/mc.rs$' sdist-files.txt
+          if grep -E '(^|/)(target|dist|\.venv[^/]*)/|\.whl$|\.pyd$|\.so$' sdist-files.txt; then
+            echo "build outputs found in the sdist"; exit 1
+          fi
+      - name: build from the sdist in a clean virtualenv and test it
+        run: |
+          python -m venv .venv-sdist
+          .venv-sdist/bin/python -m pip install dist-sdist/*.tar.gz pytest numpy
+          mkdir sdist-tests && cp python/tests/*.py sdist-tests/
+          cd sdist-tests
+          ../.venv-sdist/bin/python -c "import quantkit; assert 'site-packages' in quantkit.__file__, quantkit.__file__"
+          ../.venv-sdist/bin/python -m pytest -q -p no:cacheprovider

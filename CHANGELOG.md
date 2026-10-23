@@ -8,9 +8,17 @@ follows [Semantic Versioning](https://semver.org/).
 
 ## [0.2.0]
 
+Initial experimental release candidate (not published). The `0.x` API may change between minor versions.
+
 Unreleased locally; nothing here has been published, so the "Changed" items are
 differences from the earlier 0.2.0 development snapshot (commit `02a6393`), listed
 so that code written against it can be migrated.
+
+### Release preparation
+- CI now triggers on pushes to `main` or `master`, on pull requests and manually (`workflow_dispatch`); jobs for Rust on three operating systems, the Rust 1.74 check (library, tests, benches, examples, doctests), a Python 3.9/3.11/3.13 x NumPy matrix that tests the installed wheel, an sdist build-and-test job, and a version-consistency check. None has run on GitHub yet.
+- Compatibility evidence recorded in `docs/release-readiness.md`: the wheel on CPython 3.9-3.13 with NumPy 1.21.6-2.5.4 (Windows), Rust 1.74.1 for all targets, and an sdist install.
+- The source distribution no longer contains build outputs, and both the wheel and the sdist carry the licence files (`python/LICENSE-*.txt` are copies of the root licences).
+- `docs/RELEASE_NOTES_0.2.0.md` (draft, unpublished) and `docs/release-readiness.md`.
 
 ### Added
 - `black` module: the normalised Black function evaluated stably far out of the money (`normalised_otm`, `ln_normalised_otm`, `ln_normalised_vega`).

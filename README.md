@@ -2,7 +2,7 @@
 
 `quantkit` is an unpublished Rust crate (with Python/NumPy bindings) for options pricing and investment risk. It prices European options with Black-Scholes-Merton (continuous dividend yield), American options on a Cox-Ross-Rubinstein tree and with Longstaff-Schwartz Monte Carlo, solves implied volatility, computes Greeks, builds and checks volatility surfaces, and reports VaR, CVaR, Sharpe, Sortino and drawdown. Two things are meant to set it apart: **batch results that say why each row failed** (status code plus solver or Monte Carlo diagnostics, instead of a bare `NaN`) and **reproducible, self-auditing synthetic datasets** for pricing models. Inputs are validated against a documented supported domain, every fallible call returns a `Result`, and the core is `#![forbid(unsafe_code)]` with two required dependencies (`thiserror`, `libm`).
 
-Status: version 0.2.0, **not published** to crates.io or PyPI, repository URL not set. See [docs/NUMERICS.md](docs/NUMERICS.md) for exact conventions and guarantees, [docs/BENCHMARKS.md](docs/BENCHMARKS.md) for measured performance, and [docs/market-gap-report.md](docs/market-gap-report.md) for how the feature choices were made.
+Status: **initial experimental release candidate, version 0.2.0**. It is not published to crates.io or PyPI, the repository URL is not set, and the GitHub Actions workflow has not been run. The public API is `0.x`: expect breaking changes between minor versions (see [docs/RELEASE_NOTES_0.2.0.md](docs/RELEASE_NOTES_0.2.0.md) for what is most likely to move). See [docs/NUMERICS.md](docs/NUMERICS.md) for exact conventions and guarantees, [docs/BENCHMARKS.md](docs/BENCHMARKS.md) for measured performance, [docs/market-gap-report.md](docs/market-gap-report.md) for how the feature choices were made, and [docs/release-readiness.md](docs/release-readiness.md) for what has and has not been validated.
 
 ## Install
 
@@ -94,7 +94,7 @@ qk.STATUS                                                                # {'Ok'
 ds = qk.make_dataset(rows=10_000, seed=7)                                # {'columns': {...}, 'metadata': {...}}
 ```
 
-Array arguments must share a shape, scalars broadcast, and all-scalar calls return scalars. `errors="raise"` (default) raises `quantkit.QuantError` naming the first bad row; `errors="nan"` returns `NaN` for failed rows. Set `RAYON_NUM_THREADS` (or call `quantkit.set_num_threads(n)` first) if you also parallelise in Python. The wheel is built with the stable ABI and declares `Requires-Python >=3.9` and `numpy>=1.21`. Only Python 3.11 with NumPy 2.4.6 on Windows has actually been tested (including a clean-virtualenv install of the built wheel); the 3.9 and 3.13 interpreters, older NumPy versions, Linux and macOS are covered only by CI that has not run.
+Array arguments must share a shape, scalars broadcast, and all-scalar calls return scalars. `errors="raise"` (default) raises `quantkit.QuantError` naming the first bad row; `errors="nan"` returns `NaN` for failed rows. Set `RAYON_NUM_THREADS` (or call `quantkit.set_num_threads(n)` first) if you also parallelise in Python. The wheel is built once with the Python 3.9 stable ABI and declares `Requires-Python >=3.9` and `numpy>=1.21`. That single wheel was installed in clean virtualenvs and passed the Python test-suite on CPython 3.9, 3.10, 3.11, 3.12 and 3.13 with NumPy 1.21.6, 1.23.5, 1.26.4, 2.0.2, 2.4.6 and 2.5.4 (ten valid combinations, Windows x86-64 only; table in [docs/release-readiness.md](docs/release-readiness.md)), and a wheel built from the source distribution was tested on 3.11. Linux, macOS and ARM are untested here and covered only by CI that has not run. NumPy versions between the tested ones are assumed, not tested.
 
 ## What it contains
 
@@ -109,16 +109,16 @@ Array arguments must share a shape, scalars broadcast, and all-scalar calls retu
 
 ## Verification status
 
-Executed locally (Windows 11, Rust 1.97.1; Python 3.11.9):
+Everything below was executed on one machine (Windows 11, x86-64). Commands, toolchain and dependency versions, and test counts are recorded in [docs/release-readiness.md](docs/release-readiness.md).
 
-* `cargo fmt --check`, `cargo clippy --all-targets --all-features -D warnings`, `cargo doc` with warnings denied, all tests with default features, `--features serde`, `--features parallel` and all features, including 123 unit tests, property tests, a no-panic suite (run once at 30,000 cases per test; 400 by default), domain-boundary tests, independent-reference tests, 150-digit accuracy tests for the pricer and the implied-volatility solver, and 93 doctests (158 integration and unit tests in total by default, 159 with `serde`).
-* Library unit tests on Rust 1.74 with all features (123 pass, including the PRNG reference vectors and both bitwise regression locks).
-* Wheel built and installed in a **clean virtualenv**; 19 Python tests pass against the installed wheel.
-* Benchmarks in [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
+* **Rust 1.97.1:** `cargo fmt --check`, clippy with warnings denied (library and bindings), `cargo doc` with warnings denied, tests with default features (158), `--features serde` (159), `--features parallel` (158) and all features (159), 93 doctests, the README snippets and all four examples, `cargo package` with the packaged source built.
+* **Rust 1.74.1 (the declared minimum), with a Rust-version-aware lockfile:** the library, all tests, benches and examples compile, and 123 unit tests, 36 integration tests and 93 doctests pass. How to reproduce: [docs/release-readiness.md](docs/release-readiness.md).
+* **Python:** one wheel in clean virtualenvs on ten Python/NumPy combinations (20 tests each, all pass) and a source distribution built and installed in a clean virtualenv (20 tests pass).
+* **Evidence quality:** 150-digit reference tests for the pricer and solver, independent-relation tests, a no-panic suite (run once at 30,000 cases per test; 400 by default), and repeated property tests. These are finite samples, not proofs.
 
-Configured but **not yet executed**: the GitHub Actions workflow (Linux/macOS/Windows, Python 3.9/3.11/3.13, MSRV job). No claim is made that it passes.
+**Not executed:** the GitHub Actions workflow (Linux, macOS, Windows jobs, the MSRV job, the Python matrix, the sdist job). It is configured to run on pushes to `main` or `master`, on pull requests, and manually; until it has run, nothing here is validated on Linux or macOS. Also untested: ARM, other `libm` versions, and any real-world use.
 
-Reference values: the normalised Black function and implied volatilities against 150-digit arithmetic over `|d1|` up to 36 (`tests/black_accuracy.rs`); BSM against an independent `erf` closed form for the ATM zero-rate case, the exact call-put symmetry `C(S,K,r,q) = P(K,S,q,r)`, homogeneity, and 5-point finite differences of prices for every Greek; the binomial tree against exact `r=0`/`q=0` early-exercise identities and McKean's perpetual put; the SVI butterfly density against second derivatives of Black prices. Hull's textbook figures are used only where noted in the tests, with tolerances matching their published precision (Hull's two- and five-step American-put figures and rho could not be confirmed against the book and are **not** used as references).
+Reference values: the normalised Black function and implied volatilities against 150-digit arithmetic over `|d1|` up to 36 (`tests/black_accuracy.rs`); BSM against an independent `erf` closed form for the ATM zero-rate case, the exact call-put symmetry `C(S,K,r,q) = P(K,S,q,r)`, homogeneity, and 5-point finite differences of prices for every Greek; the binomial tree against exact early-exercise identities under their stated sufficient conditions and McKean's perpetual put; the SVI butterfly density against second derivatives of Black prices. Hull's textbook figures are used only where noted in the tests, with tolerances matching their published precision (Hull's two- and five-step American-put figures and rho could not be confirmed against the book and are **not** used as references).
 
 ## Known limitations
 

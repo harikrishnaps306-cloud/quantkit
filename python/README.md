@@ -17,6 +17,7 @@ d = qk.implied_vol_detailed(prices, spots, 100.0, 0.03, 1.0)  # per-row status, 
 ds = qk.make_dataset(rows=10_000, seed=7)                     # reproducible dataset + audit metadata
 ```
 
-Build locally with `maturin develop --release`. Wheels use the Python 3.9 stable ABI; only
-Python 3.11 on Windows has been tested locally. See `docs/NUMERICS.md` for shape, error and
+Build locally with `maturin develop --release`. The wheel uses the Python 3.9 stable ABI and
+declares `Requires-Python >=3.9`, `numpy>=1.21`. It passed the test-suite on CPython 3.9-3.13 with
+NumPy 1.21.6-2.5.4 (ten combinations, Windows x86-64 only); Linux and macOS are untested. See `docs/NUMERICS.md` for shape, error and
 threading semantics and `docs/BENCHMARKS.md` for measured performance.
