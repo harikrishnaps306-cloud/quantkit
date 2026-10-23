@@ -28,7 +28,7 @@ const FRAC_1_SQRT_2: f64 = std::f64::consts::FRAC_1_SQRT_2;
 /// assert!((norm_pdf(0.0) - 0.398_942_280_401_432_7).abs() < 1e-15);
 /// ```
 pub fn norm_pdf(x: f64) -> f64 {
-    INV_SQRT_2PI * (-0.5 * x * x).exp()
+    INV_SQRT_2PI * libm::exp(-0.5 * x * x)
 }
 
 /// Standard normal cumulative distribution `Phi(x)`.
@@ -111,7 +111,7 @@ pub fn norm_inv_cdf(p: f64) -> Result<f64> {
     const P_LOW: f64 = 0.02425;
 
     let x = if p < P_LOW {
-        let q = (-2.0 * p.ln()).sqrt();
+        let q = (-2.0 * libm::log(p)).sqrt();
         (((((C[0] * q + C[1]) * q + C[2]) * q + C[3]) * q + C[4]) * q + C[5])
             / ((((D[0] * q + D[1]) * q + D[2]) * q + D[3]) * q + 1.0)
     } else if p <= 1.0 - P_LOW {
@@ -120,14 +120,14 @@ pub fn norm_inv_cdf(p: f64) -> Result<f64> {
         (((((A[0] * r + A[1]) * r + A[2]) * r + A[3]) * r + A[4]) * r + A[5]) * q
             / (((((B[0] * r + B[1]) * r + B[2]) * r + B[3]) * r + B[4]) * r + 1.0)
     } else {
-        let q = (-2.0 * (1.0 - p).ln()).sqrt();
+        let q = (-2.0 * libm::log(1.0 - p)).sqrt();
         -(((((C[0] * q + C[1]) * q + C[2]) * q + C[3]) * q + C[4]) * q + C[5])
             / ((((D[0] * q + D[1]) * q + D[2]) * q + D[3]) * q + 1.0)
     };
 
     // One Halley step.
     let e = norm_cdf(x) - p;
-    let u = e * SQRT_2PI * (0.5 * x * x).exp();
+    let u = e * SQRT_2PI * libm::exp(0.5 * x * x);
     Ok(x - u / (1.0 + 0.5 * x * u))
 }
 

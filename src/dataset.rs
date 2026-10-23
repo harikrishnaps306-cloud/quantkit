@@ -315,7 +315,10 @@ fn check_range(
         return Err(invalid(name, "lower bound exceeds upper bound"));
     }
     if lo < min || hi > max || (positive && lo <= 0.0) {
-        return Err(invalid(name, "range outside the supported domain (see quantkit::limits)"));
+        return Err(invalid(
+            name,
+            "range outside the supported domain (see quantkit::limits)",
+        ));
     }
     Ok(())
 }
@@ -326,10 +329,7 @@ fn validate(spec: &DatasetSpec) -> Result<()> {
     }
     check_range("spot", (spec.spot, spec.spot), MIN_PRICE, MAX_PRICE, true)?;
     check_range("moneyness", spec.moneyness, 0.0, f64::MAX, true)?;
-    let (k_lo, k_hi) = (
-        spec.spot * spec.moneyness.0,
-        spec.spot * spec.moneyness.1,
-    );
+    let (k_lo, k_hi) = (spec.spot * spec.moneyness.0, spec.spot * spec.moneyness.1);
     check_range("strike", (k_lo, k_hi), MIN_PRICE, MAX_PRICE, true)?;
     check_range("expiry", spec.expiry, MIN_EXPIRY, MAX_EXPIRY, true)?;
     check_range("volatility", spec.volatility, MIN_VOL, MAX_VOL, true)?;
@@ -378,7 +378,8 @@ fn unit_samples(spec: &DatasetSpec, dims: usize) -> Vec<Vec<f64>> {
 }
 
 fn log_lerp((lo, hi): (f64, f64), u: f64) -> f64 {
-    (lo.ln() + u * (hi.ln() - lo.ln())).exp().clamp(lo, hi)
+    let (a, b) = (libm::log(lo), libm::log(hi));
+    libm::exp(a + u * (b - a)).clamp(lo, hi)
 }
 
 fn lin_lerp((lo, hi): (f64, f64), u: f64) -> f64 {
@@ -439,8 +440,8 @@ fn check_invariants(rows: &[DatasetRow]) -> InvariantReport {
             rep.non_finite += 1;
             continue;
         }
-        let ds = r.spot * (-r.dividend_yield * r.expiry).exp();
-        let dk = r.strike * (-r.rate * r.expiry).exp();
+        let ds = r.spot * libm::exp(-r.dividend_yield * r.expiry);
+        let dk = r.strike * libm::exp(-r.rate * r.expiry);
         let (lower, upper) = if r.is_call {
             ((ds - dk).max(0.0), ds)
         } else {
@@ -471,7 +472,7 @@ fn check_invariants(rows: &[DatasetRow]) -> InvariantReport {
                 rep.parity_violations += 1;
             }
         }
-        let eq = (-r.dividend_yield * r.expiry).exp();
+        let eq = libm::exp(-r.dividend_yield * r.expiry);
         let (d_lo, d_hi) = if r.is_call { (0.0, eq) } else { (-eq, 0.0) };
         if r.delta < d_lo - 1e-12 || r.delta > d_hi + 1e-12 {
             rep.delta_violations += 1;
@@ -647,6 +648,27 @@ mod tests {
         assert_eq!(a.to_csv(), b.to_csv());
     }
 
+    /// Regression lock, NOT an accuracy reference: recorded from this
+    /// implementation. All arithmetic on this path uses IEEE operations and
+    /// the pure-Rust `libm` functions, so the checksum is expected to be the
+    /// same on every platform; CI on several operating systems is what would
+    /// actually demonstrate that.
+    #[test]
+    fn checksum_regression_lock() {
+        let ds = generate(&DatasetSpec {
+            rows: 200,
+            seed: 123,
+            ..DatasetSpec::default()
+        })
+        .unwrap();
+        assert_eq!(
+            ds.metadata.checksum, GOLDEN_CHECKSUM,
+            "{:#x}",
+            ds.metadata.checksum
+        );
+    }
+    const GOLDEN_CHECKSUM: u64 = 5032231679998956232;
+
     #[test]
     fn counts_and_invariants() {
         let ds = generate(&small(3)).unwrap();
@@ -656,7 +678,11 @@ mod tests {
         assert!(ds.rows[..96].iter().all(|r| r.boundary));
         assert!(ds.rows[96..].iter().all(|r| !r.boundary));
         assert_eq!(ds.metadata.invariants.rows_checked, 496);
-        assert!(ds.metadata.invariants.all_passed(), "{:?}", ds.metadata.invariants);
+        assert!(
+            ds.metadata.invariants.all_passed(),
+            "{:?}",
+            ds.metadata.invariants
+        );
         assert!(ds.metadata.invariants.max_parity_error < 1e-9);
         let no_boundary = generate(&DatasetSpec {
             include_boundary: false,
@@ -677,10 +703,15 @@ mod tests {
             assert!(r.expiry >= spec.expiry.0 && r.expiry <= spec.expiry.1);
             assert!(r.volatility >= spec.volatility.0 && r.volatility <= spec.volatility.1);
             assert!(r.rate >= spec.rate.0 && r.rate <= spec.rate.1);
-            assert!(r.dividend_yield >= spec.dividend_yield.0 && r.dividend_yield <= spec.dividend_yield.1);
+            assert!(
+                r.dividend_yield >= spec.dividend_yield.0
+                    && r.dividend_yield <= spec.dividend_yield.1
+            );
         }
         let has = |f: &dyn Fn(&DatasetRow) -> bool| ds.rows.iter().any(|r| r.boundary && f(r));
-        assert!(has(&|r| r.expiry == spec.expiry.0 && r.volatility == spec.volatility.1));
+        assert!(has(
+            &|r| r.expiry == spec.expiry.0 && r.volatility == spec.volatility.1
+        ));
         assert!(has(&|r| r.strike == spec.spot && r.rate == spec.rate.0));
         assert!(has(&|r| r.is_call) && has(&|r| !r.is_call));
     }
@@ -721,7 +752,11 @@ mod tests {
         .unwrap();
         assert!(puts.rows.iter().all(|r| !r.is_call));
         let both = generate(&small(5)).unwrap();
-        let n_calls = both.rows.iter().filter(|r| !r.boundary && r.is_call).count();
+        let n_calls = both
+            .rows
+            .iter()
+            .filter(|r| !r.boundary && r.is_call)
+            .count();
         assert_eq!(n_calls, 200); // Latin hypercube splits the kind dimension evenly
     }
 
@@ -749,13 +784,38 @@ mod tests {
     fn rejects_bad_specs() {
         let ok = small(1);
         assert!(generate(&DatasetSpec { rows: 0, ..ok }).is_err());
-        assert!(generate(&DatasetSpec { moneyness: (2.0, 0.5), ..ok }).is_err());
-        assert!(generate(&DatasetSpec { moneyness: (0.0, 2.0), ..ok }).is_err());
-        assert!(generate(&DatasetSpec { volatility: (f64::NAN, 1.0), ..ok }).is_err());
-        assert!(generate(&DatasetSpec { volatility: (1e-12, 1.0), ..ok }).is_err());
-        assert!(generate(&DatasetSpec { expiry: (0.1, 5e3), ..ok }).is_err());
+        assert!(generate(&DatasetSpec {
+            moneyness: (2.0, 0.5),
+            ..ok
+        })
+        .is_err());
+        assert!(generate(&DatasetSpec {
+            moneyness: (0.0, 2.0),
+            ..ok
+        })
+        .is_err());
+        assert!(generate(&DatasetSpec {
+            volatility: (f64::NAN, 1.0),
+            ..ok
+        })
+        .is_err());
+        assert!(generate(&DatasetSpec {
+            volatility: (1e-12, 1.0),
+            ..ok
+        })
+        .is_err());
+        assert!(generate(&DatasetSpec {
+            expiry: (0.1, 5e3),
+            ..ok
+        })
+        .is_err());
         assert!(generate(&DatasetSpec { spot: -1.0, ..ok }).is_err());
-        assert!(generate(&DatasetSpec { rate: (0.0, 5.0), expiry: (0.1, 200.0), ..ok }).is_err());
+        assert!(generate(&DatasetSpec {
+            rate: (0.0, 5.0),
+            expiry: (0.1, 200.0),
+            ..ok
+        })
+        .is_err());
     }
 
     #[test]
@@ -770,7 +830,10 @@ mod tests {
             ..DatasetSpec::default()
         };
         let ds = generate(&spec).unwrap();
-        assert!(ds.rows.iter().all(|r| r.strike == 100.0 && r.volatility == 0.2));
+        assert!(ds
+            .rows
+            .iter()
+            .all(|r| r.strike == 100.0 && r.volatility == 0.2));
         assert!(ds.metadata.invariants.all_passed());
     }
 }

@@ -17,7 +17,7 @@ use crate::option::{OptionParams, OptionType};
 /// The BSM `d1` and `d2` terms.
 pub(crate) fn d1_d2(p: &OptionParams) -> (f64, f64) {
     let sig_sqrt_t = p.volatility() * p.expiry().sqrt();
-    let d1 = ((p.spot() / p.strike()).ln()
+    let d1 = (libm::log(p.spot() / p.strike())
         + (p.rate() - p.dividend_yield() + 0.5 * p.volatility() * p.volatility()) * p.expiry())
         / sig_sqrt_t;
     (d1, d1 - sig_sqrt_t)
@@ -41,8 +41,8 @@ pub(crate) fn d1_d2(p: &OptionParams) -> (f64, f64) {
 /// ```
 pub fn price(p: &OptionParams, kind: OptionType) -> f64 {
     let (d1, d2) = d1_d2(p);
-    let disc_spot = p.spot() * (-p.dividend_yield() * p.expiry()).exp();
-    let disc_strike = p.strike() * (-p.rate() * p.expiry()).exp();
+    let disc_spot = p.spot() * libm::exp(-p.dividend_yield() * p.expiry());
+    let disc_strike = p.strike() * libm::exp(-p.rate() * p.expiry());
     // Within the supported domain (see `limits`) the true price is >= 0; the
     // difference of two nearly equal terms can come out as a rounding-sized
     // negative number, which is clamped to zero.

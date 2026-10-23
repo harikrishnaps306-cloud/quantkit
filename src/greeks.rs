@@ -72,8 +72,8 @@ pub fn analytic(p: &OptionParams, kind: OptionType) -> Greeks {
         p.expiry(),
     );
     let sqrt_t = t.sqrt();
-    let eq = (-q * t).exp();
-    let er = (-r * t).exp();
+    let eq = libm::exp(-q * t);
+    let er = libm::exp(-r * t);
     let pdf_d1 = norm_pdf(d1);
 
     let gamma = eq * pdf_d1 / (s * v * sqrt_t);

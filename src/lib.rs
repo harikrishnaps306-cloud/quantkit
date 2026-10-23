@@ -36,6 +36,7 @@
 pub mod batch;
 pub mod binomial;
 pub mod bsm;
+pub mod dataset;
 pub mod detailed;
 pub mod dist;
 mod error;
