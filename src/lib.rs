@@ -33,6 +33,7 @@
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
 
+pub mod batch;
 pub mod binomial;
 pub mod bsm;
 pub mod dist;
