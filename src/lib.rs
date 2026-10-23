@@ -40,6 +40,7 @@ pub mod dist;
 mod error;
 pub mod greeks;
 pub mod implied_vol;
+pub mod mc;
 mod option;
 pub mod risk;
 
