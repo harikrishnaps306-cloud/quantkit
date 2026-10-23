@@ -11,6 +11,7 @@
 pub mod bsm;
 pub mod dist;
 mod error;
+pub mod greeks;
 mod option;
 
 pub use error::{QuantError, Result};
