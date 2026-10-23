@@ -541,6 +541,7 @@ fn fnv1a(rows: &[DatasetRow]) -> u64 {
 /// assert!(ds.metadata.invariants.all_passed());
 /// # Ok::<(), quantkit::QuantError>(())
 /// ```
+#[allow(clippy::needless_range_loop)]
 pub fn generate(spec: &DatasetSpec) -> Result<Dataset> {
     validate(spec)?;
     let kinds: &[bool] = match spec.kinds {

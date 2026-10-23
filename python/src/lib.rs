@@ -14,8 +14,8 @@ use numpy::{IntoPyArray, PyArray1, PyArrayMethods, PyReadonlyArrayDyn};
 use pyo3::create_exception;
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
-use pyo3::IntoPyObjectExt;
 use pyo3::types::{PyDict, PyFloat, PyList};
+use pyo3::IntoPyObjectExt;
 
 use qk::detailed::{RawOption, RawQuote};
 use qk::{ExerciseStyle, OptionParams, OptionType, StatusCode};
@@ -146,6 +146,29 @@ fn raise_first(
         }
     }
     Ok(())
+}
+
+/// Raises the first failed row of a column result (when `raise`).
+fn raise_columns(raise: bool, errors: &[(usize, qk::QuantError)]) -> PyResult<()> {
+    if raise {
+        if let Some((i, e)) = errors.first() {
+            return Err(QuantError::new_err(format!("row {i}: {e}")));
+        }
+    }
+    Ok(())
+}
+
+/// Per-row message list (None for successful rows) from sparse errors.
+fn sparse_messages<'py>(
+    py: Python<'py>,
+    n: usize,
+    errors: &[(usize, qk::QuantError)],
+) -> PyResult<Bound<'py, PyList>> {
+    let mut msgs: Vec<Option<String>> = vec![None; n];
+    for (i, e) in errors {
+        msgs[*i] = Some(e.to_string());
+    }
+    PyList::new(py, msgs)
 }
 
 fn greeks_dict<'py>(py: Python<'py>, g: qk::greeks::Greeks) -> PyResult<Bound<'py, PyDict>> {
@@ -400,18 +423,29 @@ fn bs_price_batch<'py>(
     let raise = check_errors_mode(errors)?;
     let div_yield = div_yield.unwrap_or(Arg::Scalar(0.0));
     let c = gather(&[&spot, &strike, &rate, &vol, &expiry, &div_yield])?;
-    let rows = raw_rows(&c);
-    let out = py.detach(|| qk::detailed::price(&rows, kind(is_call)));
-    let st: Vec<StatusCode> = out.iter().map(|r| r.status).collect();
-    let er: Vec<_> = out.iter().map(|r| r.error.clone()).collect();
-    raise_first(raise, &st, &er)?;
-    float_out(py, out.iter().map(|r| r.price).collect(), &c.shape)
+    let out = py
+        .detach(|| {
+            qk::detailed::price_columns(
+                &c.cols[0],
+                &c.cols[1],
+                &c.cols[2],
+                &c.cols[5],
+                &c.cols[3],
+                &c.cols[4],
+                kind(is_call),
+            )
+        })
+        .map_err(err)?;
+    raise_columns(raise, &out.errors)?;
+    let [price] = out.values;
+    float_out(py, price, &c.shape)
 }
 
 /// Like `bs_price_batch`, returning a dict with `price`, `status` (uint8 codes, see
 /// `quantkit.STATUS`) and `messages` (flattened list; None where the row succeeded).
 #[pyfunction]
 #[pyo3(signature = (spot, strike, rate, vol, expiry, is_call=true, div_yield=None))]
+#[allow(clippy::too_many_arguments)]
 fn bs_price_detailed<'py>(
     py: Python<'py>,
     spot: Arg<'py>,
@@ -424,17 +458,24 @@ fn bs_price_detailed<'py>(
 ) -> PyResult<Bound<'py, PyDict>> {
     let div_yield = div_yield.unwrap_or(Arg::Scalar(0.0));
     let c = gather(&[&spot, &strike, &rate, &vol, &expiry, &div_yield])?;
-    let rows = raw_rows(&c);
-    let out = py.detach(|| qk::detailed::price(&rows, kind(is_call)));
-    let st: Vec<StatusCode> = out.iter().map(|r| r.status).collect();
-    let er: Vec<_> = out.iter().map(|r| r.error.clone()).collect();
+    let out = py
+        .detach(|| {
+            qk::detailed::price_columns(
+                &c.cols[0],
+                &c.cols[1],
+                &c.cols[2],
+                &c.cols[5],
+                &c.cols[3],
+                &c.cols[4],
+                kind(is_call),
+            )
+        })
+        .map_err(err)?;
     let d = PyDict::new(py);
-    d.set_item(
-        "price",
-        float_out(py, out.iter().map(|r| r.price).collect(), &c.shape)?,
-    )?;
-    d.set_item("status", uint_out(py, codes(&st), &c.shape)?)?;
-    d.set_item("messages", messages(py, &er)?)?;
+    let [price] = out.values;
+    d.set_item("price", float_out(py, price, &c.shape)?)?;
+    d.set_item("status", uint_out(py, codes(&out.status), &c.shape)?)?;
+    d.set_item("messages", sparse_messages(py, c.n, &out.errors)?)?;
     Ok(d)
 }
 
@@ -456,25 +497,24 @@ fn bs_greeks_batch<'py>(
     let raise = check_errors_mode(errors)?;
     let div_yield = div_yield.unwrap_or(Arg::Scalar(0.0));
     let c = gather(&[&spot, &strike, &rate, &vol, &expiry, &div_yield])?;
-    let rows = raw_rows(&c);
-    let out = py.detach(|| qk::detailed::greeks(&rows, kind(is_call)));
-    let st: Vec<StatusCode> = out.iter().map(|r| r.status).collect();
-    let er: Vec<_> = out.iter().map(|r| r.error.clone()).collect();
-    raise_first(raise, &st, &er)?;
+    let out = py
+        .detach(|| {
+            qk::detailed::greeks_columns(
+                &c.cols[0],
+                &c.cols[1],
+                &c.cols[2],
+                &c.cols[5],
+                &c.cols[3],
+                &c.cols[4],
+                kind(is_call),
+            )
+        })
+        .map_err(err)?;
+    raise_columns(raise, &out.errors)?;
     let d = PyDict::new(py);
-    type Pick = fn(&qk::greeks::Greeks) -> f64;
-    let picks: [(&str, Pick); 5] = [
-        ("delta", |g| g.delta),
-        ("gamma", |g| g.gamma),
-        ("vega", |g| g.vega),
-        ("theta", |g| g.theta),
-        ("rho", |g| g.rho),
-    ];
-    for (name, f) in picks {
-        d.set_item(
-            name,
-            float_out(py, out.iter().map(|r| f(&r.greeks)).collect(), &c.shape)?,
-        )?;
+    let names = ["delta", "gamma", "vega", "theta", "rho"];
+    for (name, col) in names.into_iter().zip(out.values) {
+        d.set_item(name, float_out(py, col, &c.shape)?)?;
     }
     Ok(d)
 }
@@ -632,7 +672,11 @@ risk_fn!(historical_cvar, "Historical CVaR (expected shortfall) as a positive lo
 risk_fn!(parametric_var, "Normal (variance-covariance) VaR as a positive loss fraction.", qk::risk::parametric_var, confidence: f64);
 risk_fn!(sharpe_ratio, "Annualised Sharpe ratio (per-period risk-free rate).", qk::risk::sharpe_ratio, risk_free_per_period: f64, periods_per_year: f64);
 risk_fn!(sortino_ratio, "Annualised Sortino ratio (per-period target).", qk::risk::sortino_ratio, target_per_period: f64, periods_per_year: f64);
-risk_fn!(max_drawdown, "Maximum drawdown of the compounded equity curve, as a fraction.", qk::risk::max_drawdown,);
+risk_fn!(
+    max_drawdown,
+    "Maximum drawdown of the compounded equity curve, as a fraction.",
+    qk::risk::max_drawdown,
+);
 risk_fn!(annualized_volatility, "Annualised volatility (sample standard deviation).", qk::risk::annualized_volatility, periods_per_year: f64);
 
 /// Fits a raw SVI smile to (log_moneyness, total_variance) points. Returns a dict with

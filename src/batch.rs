@@ -23,18 +23,38 @@ use crate::option::{Contract, ExerciseStyle, OptionParams, OptionType};
 #[cfg(feature = "parallel")]
 const PARALLEL_THRESHOLD: usize = 256;
 
+/// Maps `f` over `items`, in parallel (with the `parallel` feature) when there
+/// are at least `min_parallel` items. Output order always matches input order.
 #[cfg(feature = "parallel")]
-pub(crate) fn map<T: Sync, R: Send, F: Fn(&T) -> R + Sync + Send>(items: &[T], f: F) -> Vec<R> {
+pub(crate) fn map_min<T: Sync, R: Send, F: Fn(&T) -> R + Sync + Send>(
+    items: &[T],
+    min_parallel: usize,
+    f: F,
+) -> Vec<R> {
     use rayon::prelude::*;
-    if items.len() < PARALLEL_THRESHOLD {
+    if items.len() < min_parallel {
         return items.iter().map(f).collect();
     }
     items.par_iter().map(f).collect()
 }
 
 #[cfg(not(feature = "parallel"))]
-pub(crate) fn map<T: Sync, R: Send, F: Fn(&T) -> R + Sync + Send>(items: &[T], f: F) -> Vec<R> {
+pub(crate) fn map_min<T: Sync, R: Send, F: Fn(&T) -> R + Sync + Send>(
+    items: &[T],
+    _min_parallel: usize,
+    f: F,
+) -> Vec<R> {
     items.iter().map(f).collect()
+}
+
+#[cfg(feature = "parallel")]
+pub(crate) fn map<T: Sync, R: Send, F: Fn(&T) -> R + Sync + Send>(items: &[T], f: F) -> Vec<R> {
+    map_min(items, PARALLEL_THRESHOLD, f)
+}
+
+#[cfg(not(feature = "parallel"))]
+pub(crate) fn map<T: Sync, R: Send, F: Fn(&T) -> R + Sync + Send>(items: &[T], f: F) -> Vec<R> {
+    map_min(items, 0, f)
 }
 
 /// BSM prices for every option in `params`.

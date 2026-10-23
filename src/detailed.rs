@@ -22,7 +22,7 @@
 //! base seed and the row index, so a row's estimate depends on its position in
 //! the batch but not on the other rows' contents.
 
-use crate::batch::map;
+use crate::batch::{map, map_min};
 use crate::error::{QuantError, Result, StatusCode};
 use crate::greeks::{self, Greeks};
 use crate::implied_vol::{self, SolverConfig};
@@ -116,6 +116,164 @@ impl RawQuote {
             .expiry(self.expiry)
             .build_contract()
     }
+}
+
+/// Column-oriented batch result: `N` value columns, a status per row, and the
+/// errors of failed rows (sparse).
+///
+/// This is the memory-lean form of the `*_detailed` row functions, intended for
+/// array front ends such as the Python bindings. Failed rows hold `NaN` in
+/// every value column and an entry in `errors`.
+///
+/// # Examples
+///
+/// ```
+/// use quantkit::detailed::price_columns;
+/// use quantkit::{OptionType, StatusCode};
+/// let c = price_columns(&[100.0, 100.0], &[100.0, 100.0], &[0.0; 2], &[0.0; 2], &[0.2, -1.0], &[1.0; 2], OptionType::Call)?;
+/// assert_eq!(c.status[0], StatusCode::Ok);
+/// assert_eq!(c.status[1], StatusCode::InvalidInput);
+/// assert!(c.values[0][1].is_nan());
+/// assert_eq!(c.errors.len(), 1);
+/// assert_eq!(c.errors[0].0, 1);
+/// # Ok::<(), quantkit::QuantError>(())
+/// ```
+#[derive(Debug, Clone, PartialEq)]
+pub struct Columns<const N: usize> {
+    /// Value columns, each of the input length.
+    pub values: [Vec<f64>; N],
+    /// Status per row.
+    pub status: Vec<StatusCode>,
+    /// `(row index, error)` for every failed row, in row order.
+    pub errors: Vec<(usize, QuantError)>,
+}
+
+/// Rows per parallel work unit in the column functions.
+const CHUNK: usize = 2048;
+
+fn columns_map<const N: usize, F>(n: usize, f: F) -> Columns<N>
+where
+    F: Fn(usize) -> Result<[f64; N]> + Sync + Send,
+{
+    let chunks: Vec<(usize, usize)> = (0..n)
+        .step_by(CHUNK)
+        .map(|s| (s, (s + CHUNK).min(n)))
+        .collect();
+    type Part<const N: usize> = (Vec<[f64; N]>, Vec<StatusCode>, Vec<(usize, QuantError)>);
+    let parts: Vec<Part<N>> = map_min(&chunks, 2, |&(start, end)| {
+        let mut vals = Vec::with_capacity(end - start);
+        let mut st = Vec::with_capacity(end - start);
+        let mut errs = Vec::new();
+        for i in start..end {
+            match f(i) {
+                Ok(v) => {
+                    vals.push(v);
+                    st.push(StatusCode::Ok);
+                }
+                Err(e) => {
+                    vals.push([f64::NAN; N]);
+                    st.push(e.status_code());
+                    errs.push((i, e));
+                }
+            }
+        }
+        (vals, st, errs)
+    });
+    let mut out = Columns {
+        values: std::array::from_fn(|_| Vec::with_capacity(n)),
+        status: Vec::with_capacity(n),
+        errors: Vec::new(),
+    };
+    for (vals, st, errs) in parts {
+        for v in vals {
+            for (col, x) in out.values.iter_mut().zip(v) {
+                col.push(x);
+            }
+        }
+        out.status.extend(st);
+        out.errors.extend(errs);
+    }
+    out
+}
+
+fn same_len(lens: &[usize]) -> Result<usize> {
+    let n = lens[0];
+    if lens.iter().any(|&l| l != n) {
+        return Err(QuantError::InvalidInput {
+            name: "columns",
+            reason: "all columns must have the same length",
+        });
+    }
+    Ok(n)
+}
+
+fn row_params(cols: [&[f64]; 6], i: usize) -> Result<OptionParams> {
+    RawOption {
+        spot: cols[0][i],
+        strike: cols[1][i],
+        rate: cols[2][i],
+        dividend_yield: cols[3][i],
+        volatility: cols[4][i],
+        expiry: cols[5][i],
+    }
+    .validate()
+}
+
+/// BSM prices from parallel columns, with per-row status. Equivalent to
+/// [`price`] on the zipped rows, without building row structs.
+///
+/// # Errors
+///
+/// [`QuantError::InvalidInput`] if the columns differ in length.
+pub fn price_columns(
+    spot: &[f64],
+    strike: &[f64],
+    rate: &[f64],
+    dividend_yield: &[f64],
+    volatility: &[f64],
+    expiry: &[f64],
+    kind: OptionType,
+) -> Result<Columns<1>> {
+    let cols = [spot, strike, rate, dividend_yield, volatility, expiry];
+    let n = same_len(&cols.map(<[f64]>::len))?;
+    Ok(columns_map(n, |i| {
+        row_params(cols, i).map(|p| [crate::bsm::price(&p, kind)])
+    }))
+}
+
+/// Analytic Greeks from parallel columns, with per-row status. Value columns
+/// are `[delta, gamma, vega, theta, rho]`.
+///
+/// # Errors
+///
+/// [`QuantError::InvalidInput`] if the columns differ in length.
+///
+/// # Examples
+///
+/// ```
+/// use quantkit::detailed::greeks_columns;
+/// use quantkit::OptionType;
+/// let c = greeks_columns(&[100.0], &[100.0], &[0.0], &[0.0], &[0.2], &[1.0], OptionType::Call)?;
+/// assert!(c.values[0][0] > 0.0 && c.values[1][0] > 0.0); // delta, gamma
+/// # Ok::<(), quantkit::QuantError>(())
+/// ```
+pub fn greeks_columns(
+    spot: &[f64],
+    strike: &[f64],
+    rate: &[f64],
+    dividend_yield: &[f64],
+    volatility: &[f64],
+    expiry: &[f64],
+    kind: OptionType,
+) -> Result<Columns<5>> {
+    let cols = [spot, strike, rate, dividend_yield, volatility, expiry];
+    let n = same_len(&cols.map(<[f64]>::len))?;
+    Ok(columns_map(n, |i| {
+        row_params(cols, i).map(|p| {
+            let g = greeks::analytic(&p, kind);
+            [g.delta, g.gamma, g.vega, g.theta, g.rho]
+        })
+    }))
 }
 
 /// Result row for [`price`].
@@ -437,6 +595,67 @@ mod tests {
         assert_ne!(ra[0].seed, ra[1].seed);
         assert_ne!(ra[0].price, ra[1].price);
         assert!(ra.iter().all(|r| r.std_error > 0.0));
+    }
+
+    #[test]
+    fn column_functions_match_row_functions() {
+        let mut rows = vec![good(); 5000];
+        for (i, r) in rows.iter_mut().enumerate() {
+            r.spot = 80.0 + (i % 50) as f64;
+            r.volatility = 0.1 + (i % 30) as f64 * 0.01;
+        }
+        rows[7].volatility = -1.0;
+        rows[4999].expiry = f64::NAN;
+        let col = |f: fn(&RawOption) -> f64| rows.iter().map(f).collect::<Vec<_>>();
+        let cols = (
+            col(|r| r.spot),
+            col(|r| r.strike),
+            col(|r| r.rate),
+            col(|r| r.dividend_yield),
+            col(|r| r.volatility),
+            col(|r| r.expiry),
+        );
+        let c = price_columns(
+            &cols.0,
+            &cols.1,
+            &cols.2,
+            &cols.3,
+            &cols.4,
+            &cols.5,
+            OptionType::Put,
+        )
+        .unwrap();
+        let g = greeks_columns(
+            &cols.0,
+            &cols.1,
+            &cols.2,
+            &cols.3,
+            &cols.4,
+            &cols.5,
+            OptionType::Put,
+        )
+        .unwrap();
+        let p_rows = price(&rows, OptionType::Put);
+        let g_rows = greeks(&rows, OptionType::Put);
+        for i in 0..rows.len() {
+            assert_eq!(c.status[i], p_rows[i].status);
+            assert_eq!(c.values[0][i].to_bits(), p_rows[i].price.to_bits());
+            assert_eq!(g.status[i], g_rows[i].status);
+            assert_eq!(g.values[0][i].to_bits(), g_rows[i].greeks.delta.to_bits());
+            assert_eq!(g.values[4][i].to_bits(), g_rows[i].greeks.rho.to_bits());
+        }
+        let failed: Vec<usize> = c.errors.iter().map(|(i, _)| *i).collect();
+        assert_eq!(failed, vec![7, 4999]);
+        assert!(price_columns(
+            &[1.0],
+            &[1.0, 2.0],
+            &[0.0],
+            &[0.0],
+            &[0.2],
+            &[1.0],
+            OptionType::Call
+        )
+        .is_err());
     }
 
     #[test]
