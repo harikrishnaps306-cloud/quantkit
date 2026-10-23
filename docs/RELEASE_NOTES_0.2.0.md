@@ -53,7 +53,7 @@ pricing and basic investment risk:
 |---|---|
 | Rust 1.97.1 (Windows) | all checks pass |
 | Rust 1.74.1 (declared MSRV, Windows), with a Rust-version-aware lockfile | library, tests, benches, examples and doctests pass |
-| Python 3.9, 3.10, 3.11, 3.12, 3.13 with NumPy 1.21.6 to 2.5.4 (Windows x86-64) | 10 combinations, all pass |
+| CPython 3.9-3.13 with NumPy 1.21.6 to 2.5.4 (Windows x86-64): ten exact pairs listed in `docs/compatibility.md` | all pass; declared `numpy>=1.21.6` (the oldest tested) |
 | Linux, macOS, ARM | **not tested** (CI configured, not yet run) |
 
 Details and exact versions: `docs/release-readiness.md`.

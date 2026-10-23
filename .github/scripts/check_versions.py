@@ -35,6 +35,17 @@ def main():
     pyproject = (ROOT / "python/pyproject.toml").read_text(encoding="utf-8")
 
     problems = []
+    floor = re.search(r'"numpy>=([0-9.]+)"', pyproject)
+    ci = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+    compat = (ROOT / "docs/compatibility.md").read_text(encoding="utf-8")
+    if not floor:
+        problems.append("python/pyproject.toml has no numpy lower bound")
+    else:
+        f = floor.group(1)
+        if f"numpy=={f}" not in ci:
+            problems.append(f"declared numpy>={f} is not pinned (numpy=={f}) in any CI matrix entry")
+        if f"| {f} |" not in compat:
+            problems.append(f"docs/compatibility.md lists no executed combination with NumPy {f}")
     if py_version != root_version:
         problems.append(f"python/Cargo.toml version {py_version} != Cargo.toml version {root_version}")
     if dep_version != root_version:

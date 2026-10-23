@@ -121,7 +121,7 @@ or stale extension, was imported), and the 20-test suite was run.
 
 | Python | NumPy | result |
 |---|---|---|
-| 3.9.25 | 1.21.6 (declared lower bound) | 20 passed |
+| 3.9.25 | 1.21.6 (declared lower bound, the oldest tested) | 20 passed |
 | 3.9.25 | 1.26.4 | 20 passed |
 | 3.9.25 | 2.0.2 | 20 passed |
 | 3.10.20 | 1.21.6 | 20 passed |
@@ -144,13 +144,15 @@ licence files and no build outputs (checked by pattern), installs in a clean
 virtualenv (building the extension from source), imports from `site-packages`,
 and passes the 20 tests (Python 3.11, NumPy 2.x).
 
-Wheel metadata: `Requires-Python >=3.9`, `Requires-Dist: numpy>=1.21`,
+Wheel metadata: `Requires-Python >=3.9`, `Requires-Dist: numpy>=1.21.6` (corrected from `>=1.21`, which had only been tested at 1.21.6; see `docs/compatibility.md`),
 `Metadata-Version 2.4`; the wheel contains `licenses/LICENSE-MIT.txt` and
 `licenses/LICENSE-APACHE.txt`, and so does a wheel built from the sdist. (The
 `.txt` suffix on the copies in `python/` avoids a name collision with the root
 licence files inside an sdist, which maturin rejects.)
 
 ## 5. Compatibility matrix
+
+The exact executed and configured combinations are listed in [compatibility.md](compatibility.md).
 
 | area | passed | failed | untested |
 |---|---|---|---|
@@ -164,12 +166,12 @@ licence files inside an sdist, which maturin rejects.)
 
 ## 6. Workflow validation: what is and is not established
 
-Established: the commands inside every job were run locally, from a fresh clone,
+Established: `actionlint` 1.7.12 reports no errors for the workflow (it checks job and step structure, action input names, expression syntax and matrix references; `shellcheck` was not installed, so the embedded shell snippets were not shellchecked); and the commands inside every job were run locally, from a fresh clone,
 with the shell, working directories, artifact paths and the "import the
 installed wheel" assertion exercised on Windows with Git Bash. The workflow file
 also parses as YAML and declares the triggers described above.
 
-**Not established:** that the workflow behaves on GitHub. Specifically untested
+**Not established:** that the workflow behaves on GitHub. (`actionlint` cannot tell whether an action tag such as `dtolnay/rust-toolchain@master` or `actions/setup-python@v5` exists or behaves as assumed.) Specifically untested
 are the action versions and inputs (`actions/checkout@v4`,
 `dtolnay/rust-toolchain@stable` and `@master` with `toolchain: "1.74"`,
 `Swatinem/rust-cache@v2`, `actions/setup-python@v5`), runner images,
@@ -189,16 +191,53 @@ Linux and macOS runners. Parsing the YAML proves none of this.
 1. **CI has never run on GitHub.** Real Linux and macOS results are the main missing validation. Until they exist, nothing here is validated off Windows.
 2. **No repository, so no URL.** Needs a real repository before `repository` (and `homepage`/`documentation`) can be set in `Cargo.toml` and `python/pyproject.toml` (`[project.urls]`).
 3. **Reproducibility is unverified off one target.** The golden vectors have only been compared on Windows x86-64 with two compilers.
-4. **Wheels for other platforms do not exist.** Only a Windows wheel was built; Linux and macOS wheels (and manylinux compliance) need CI or cibuildwheel, and the `numpy>=1.21` bound needs confirming there.
+4. **Wheels for other platforms do not exist.** Only a Windows wheel was built; Linux and macOS wheels (and manylinux compliance) need CI or cibuildwheel, and the `numpy>=1.21.6` bound needs confirming there.
 5. **Accuracy is evidence, not proof;** the accurate pricer and solver are slower than a naive implementation (see `docs/BENCHMARKS.md`); several reference figures from a textbook are unconfirmed and unused.
 6. **Maintainer decisions not made:** crate/package name availability on crates.io and PyPI at publish time; the final `0.x` API-stability policy (draft in `docs/RELEASE_NOTES_0.2.0.md`); whether to publish at all.
 
 ## 9. The exact next external action
 
-Nothing further can be validated locally. The next step needs one of:
+Nothing further can be validated locally. Everything below is prepared and
+**has not been run**; no remote exists and nothing has been pushed.
 
-* **You create an empty GitHub repository** and tell me its `owner/name` (or URL), and **authorize a push of the local `master` branch** to it. Then I would: add the remote, set the verified URL in `Cargo.toml` and `python/pyproject.toml`, push `master` (which triggers CI), and report the results of the first real run (fixing whatever fails on Linux and macOS). The GitHub CLI (`gh`) is not installed here, so I will not create the repository for you; a plain `git push` is enough once the repository exists.
-* Alternatively, run the workflow yourself: push the branch to a repository you control and use Actions -> CI -> "Run workflow".
+### What I need from you
 
-Nothing will be pushed, tagged, or published to GitHub, crates.io or PyPI without
-that explicit go-ahead.
+1. A GitHub repository, **empty** (no README/licence/.gitignore, so the first push is a plain fast-forward), as `https://github.com/OWNER/NAME`, and whether it is **public or private**.
+2. Explicit authorization to **push the local `master` branch** to it (only that branch; no tags).
+3. How the push can authenticate from this machine. `gh` is not installed; a plain `git push` works if a Git credential helper already holds your GitHub login, otherwise you would run the push yourself or give me a way to authenticate. I will not ask you to paste a token into chat.
+
+### What I will do, in order, once I have them
+
+```bash
+# 0. confirm the repository exists and is empty (read-only)
+git ls-remote https://github.com/OWNER/NAME
+
+# 1. record the verified URL in the metadata (dry run first, then write)
+python .github/scripts/set_repository_url.py https://github.com/OWNER/NAME
+python .github/scripts/set_repository_url.py https://github.com/OWNER/NAME --write
+python .github/scripts/check_versions.py && cargo package     # still consistent and packageable
+git commit -am "Set verified repository URL"
+
+# 2. push master (this triggers CI: a push to master)
+git remote add origin https://github.com/OWNER/NAME
+git push -u origin master
+```
+
+No tag is created and nothing is published to crates.io or PyPI.
+
+### How I will inspect the first run
+
+* **Public repository:** the unauthenticated GitHub REST API lists runs, jobs and per-step conclusions (`https://api.github.com/repos/OWNER/NAME/actions/runs`, then `.../runs/<id>/jobs`), and the Actions page can be read in a browser. Raw log downloads need authentication even for public repositories, so for failures I would work from step names, conclusions and annotations and ask you to paste the failing step's log if that is not enough.
+* **Private repository:** the API needs a token. Without one, I would rely on logs you paste or screenshots.
+
+### Failure triage plan
+
+Fix in this order, one root cause at a time, re-pushing to `master` (or running the workflow manually on a branch) after each fix:
+
+1. `metadata`, `rust (ubuntu)`, `rust (windows)`: should match the local runs; a difference points to the environment (line endings, tool versions).
+2. `rust (macos)` and `msrv`: toolchain action inputs, resolver behaviour.
+3. `python` rows: wheel tags (manylinux/macOS), old-NumPy wheel availability on Linux/macOS runners, shell path differences.
+4. `sdist`: building the extension from the source archive on a runner.
+5. Golden-vector failures on Linux or macOS would be a real finding about cross-platform reproducibility; they would be reported and explained, never silently re-recorded.
+
+Numerical algorithms are not to be changed to make CI pass.

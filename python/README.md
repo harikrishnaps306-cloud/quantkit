@@ -18,6 +18,6 @@ ds = qk.make_dataset(rows=10_000, seed=7)                     # reproducible dat
 ```
 
 Build locally with `maturin develop --release`. The wheel uses the Python 3.9 stable ABI and
-declares `Requires-Python >=3.9`, `numpy>=1.21`. It passed the test-suite on CPython 3.9-3.13 with
-NumPy 1.21.6-2.5.4 (ten combinations, Windows x86-64 only); Linux and macOS are untested. See `docs/NUMERICS.md` for shape, error and
+declares `Requires-Python >=3.9`, `numpy>=1.21.6`. It passed the test-suite on ten exact CPython/NumPy
+combinations (Windows x86-64 only), listed in `docs/compatibility.md`; Linux and macOS are untested. See `docs/NUMERICS.md` for shape, error and
 threading semantics and `docs/BENCHMARKS.md` for measured performance.
