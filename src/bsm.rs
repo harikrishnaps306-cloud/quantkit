@@ -109,7 +109,8 @@ mod tests {
     // The values below were computed with an independent implementation in
     // Python 3 (`math.erfc`, double precision). The ATM case also matches
     // the widely quoted 10.4506 / 5.5735 for S=K=100, r=5%, sigma=20%, T=1.
-    const REFS: [((f64, f64, f64, f64, f64, f64), f64, f64); 4] = [
+    type Case = (f64, f64, f64, f64, f64, f64);
+    const REFS: [(Case, f64, f64); 4] = [
         (
             (42.0, 40.0, 0.10, 0.0, 0.20, 0.5),
             4.759_422_392_871_528,
@@ -123,7 +124,7 @@ mod tests {
         (
             (100.0, 95.0, 0.10, 0.05, 0.20, 0.5),
             9.628_983_522_021_265,
-            2.464_787_646_755_855_8,
+            2.464_787_646_755_823_4,
         ),
         (
             (100.0, 110.0, 0.0, 0.0, 0.30, 2.0),
