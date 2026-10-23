@@ -8,8 +8,8 @@
 //! | function | row type | diagnostics |
 //! |---|---|---|
 //! | [`price`] | [`PriceRow`] | status |
-//! | [`greeks`] | [`GreeksRow`] | status |
-//! | [`implied_vol`] | [`IvRow`] | solver residual, iteration counts, vega |
+//! | [`greeks()`](fn@greeks) | [`GreeksRow`] | status |
+//! | [`implied_vol()`](fn@implied_vol) | [`IvRow`] | solver residual, iteration counts, vega |
 //! | [`mc_european`] | [`McRow`] | sampling standard error, paths used |
 //!
 //! A failed row never poisons the others. Numeric fields of a failed row are
@@ -316,7 +316,7 @@ pub fn price(rows: &[RawOption], kind: OptionType) -> Vec<PriceRow> {
     })
 }
 
-/// Result row for [`greeks`].
+/// Result row for [`greeks()`](fn@greeks).
 #[derive(Debug, Clone, PartialEq)]
 pub struct GreeksRow {
     /// `Ok` or the failure kind.
@@ -360,7 +360,7 @@ pub fn greeks(rows: &[RawOption], kind: OptionType) -> Vec<GreeksRow> {
     })
 }
 
-/// Result row for [`implied_vol`].
+/// Result row for [`implied_vol()`](fn@implied_vol).
 #[derive(Debug, Clone, PartialEq)]
 pub struct IvRow {
     /// `Ok` or the failure kind.

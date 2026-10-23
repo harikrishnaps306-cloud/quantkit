@@ -19,7 +19,7 @@
 //!   independent validation of the pricing formula, which is tested
 //!   separately against reference values.
 //! * Datasets are bitwise reproducible from `(spec, quantkit version)`: the
-//!   sampler uses the crate's platform-independent [`mc::Rng`].
+//!   sampler uses the crate's platform-independent [`crate::mc::Rng`].
 //!
 //! # Conventions
 //!

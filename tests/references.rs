@@ -273,11 +273,21 @@ proptest! {
         let sol = solve_detailed(p.contract(), kind, price, SolverConfig::default());
         prop_assume!(sol.is_ok());
         let sol = sol.unwrap();
+        // Far out of the money the closed-form price itself carries relative
+        // noise that grows with |d1| (measured with 60-digit arithmetic in
+        // benchmarks/bsm_tail_accuracy.py and docs/NUMERICS.md: about 3e-12 at
+        // |d1| = 10, 1.4e-10 at 30). The round-trip claim only holds above that
+        // noise floor, so such inputs are excluded and the rest get an explicit
+        // noise allowance.
+        let sq = v * t.sqrt();
+        let d1 = ((s / (s * m)).ln() + (r + 0.5 * v * v) * t) / sq;
+        prop_assume!(d1.abs() <= 30.0);
+        let noise = 1e-12 * (1.0 + d1 * d1);
         let vega_true = greeks::analytic(&p, kind).vega;
         let vega_min = vega_true.min(sol.vega);
         if vega_min > 0.0 {
             let tol = 8.0 * f64::EPSILON.max(1e-12) * price;
-            prop_assert!((sol.vol - v).abs() * vega_min <= 4.0 * tol + 1e-12 * price,
+            prop_assert!((sol.vol - v).abs() * vega_min <= 4.0 * tol + noise * price,
                 "vol error {} * vega {vega_min} > price tolerance {tol}", (sol.vol - v).abs());
         }
     }

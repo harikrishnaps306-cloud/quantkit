@@ -34,6 +34,28 @@ Rounding can make the difference of two nearly equal terms slightly negative
 (about `1e-16` of the term size); the BSM price is clamped to `0.0` in that
 case.
 
+**Relative accuracy far out of the money is limited.** An out-of-the-money
+price is a difference of two nearly equal terms, so its *relative* error grows
+with `|d1|` even though the *absolute* error stays negligible. Measured against
+60-digit arithmetic (`benchmarks/bsm_tail_accuracy.py`, call, `sigma sqrt(T) =
+0.02`, `S = 100`):
+
+| `abs(d1)` | relative error of the price |
+|---|---|
+| 2 | 1.1e-14 |
+| 5 | 7.9e-13 |
+| 10 | 2.8e-12 |
+| 20 | 1.1e-11 |
+| 30 | 1.4e-10 |
+| 38 (price `1.5e-317`, subnormal) | 8.2e-8 |
+
+This matters for implied volatility: the solver's residual is measured against
+the model price, so beyond `|d1| ~ 15` the solver's `1e-12` relative tolerance
+is below the price function's own noise, and recovered volatilities there are
+correspondingly uncertain (the diagnostics still report the residual honestly).
+A numerically stable far-tail formula (for example Jaeckel's normalised Black
+function) is a listed next step, not implemented.
+
 ## 2. Conventions
 
 * Continuous compounding, continuous dividend yield `q`, forward
