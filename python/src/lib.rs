@@ -11,8 +11,8 @@ use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 
-use quantkit as qk;
 use qk::{ExerciseStyle, OptionParams, OptionType};
+use quantkit as qk;
 
 create_exception!(_quantkit, QuantError, PyValueError);
 
@@ -123,6 +123,7 @@ fn bs_price(
 /// Analytic BSM Greeks as a dict: delta, gamma, vega (per 1.00 vol), theta (per year), rho (per 1.00 rate).
 #[pyfunction]
 #[pyo3(signature = (spot, strike, rate, vol, expiry, is_call=true, div_yield=0.0))]
+#[allow(clippy::too_many_arguments)]
 fn bs_greeks<'py>(
     py: Python<'py>,
     spot: f64,
@@ -332,7 +333,7 @@ fn bs_greeks_batch<'py>(
 /// Vectorised implied volatility. Unsolvable rows give NaN with `errors='nan'`.
 #[pyfunction]
 #[pyo3(signature = (price, spot, strike, rate, expiry, is_call=true, div_yield=None, errors="raise"))]
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, clippy::needless_range_loop)]
 fn implied_vol_batch<'py>(
     py: Python<'py>,
     price: Arg<'py>,
@@ -447,7 +448,11 @@ risk_fn!(historical_cvar, "Historical CVaR (expected shortfall) as a positive lo
 risk_fn!(parametric_var, "Normal (variance-covariance) VaR as a positive loss fraction.", qk::risk::parametric_var, confidence: f64);
 risk_fn!(sharpe_ratio, "Annualised Sharpe ratio.", qk::risk::sharpe_ratio, risk_free_per_period: f64, periods_per_year: f64);
 risk_fn!(sortino_ratio, "Annualised Sortino ratio.", qk::risk::sortino_ratio, target_per_period: f64, periods_per_year: f64);
-risk_fn!(max_drawdown, "Maximum drawdown of the compounded equity curve, as a fraction.", qk::risk::max_drawdown,);
+risk_fn!(
+    max_drawdown,
+    "Maximum drawdown of the compounded equity curve, as a fraction.",
+    qk::risk::max_drawdown,
+);
 risk_fn!(annualized_volatility, "Annualised volatility (sample standard deviation).", qk::risk::annualized_volatility, periods_per_year: f64);
 
 /// Fits a raw SVI smile to (log_moneyness, total_variance) points. Returns a dict with
@@ -460,9 +465,7 @@ fn svi_fit<'py>(
 ) -> PyResult<Bound<'py, PyDict>> {
     let ks: Vec<f64> = log_moneyness.as_array().iter().copied().collect();
     let ws: Vec<f64> = total_variance.as_array().iter().copied().collect();
-    let fit = py
-        .detach(|| qk::surface::fit_svi(&ks, &ws))
-        .map_err(err)?;
+    let fit = py.detach(|| qk::surface::fit_svi(&ks, &ws)).map_err(err)?;
     let d = PyDict::new(py);
     d.set_item("a", fit.params.a)?;
     d.set_item("b", fit.params.b)?;
