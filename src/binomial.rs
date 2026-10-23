@@ -13,11 +13,14 @@ use crate::error::{QuantError, Result};
 use crate::greeks::{self, Bumps, Greeks};
 use crate::option::{ExerciseStyle, OptionParams, OptionType};
 
+/// Largest supported tree. The work grows with `steps^2`, so this is already slow.
+const MAX_STEPS: usize = 100_000;
+
 /// Prices an option on a CRR tree with `steps` time steps.
 ///
 /// # Errors
 ///
-/// * [`QuantError::InvalidInput`] if `steps == 0`, or if `steps` is so small
+/// * [`QuantError::InvalidInput`] if `steps` is 0 or above 100,000, or if `steps` is so small
 ///   that the risk-neutral probability leaves `(0, 1)` (the tree would admit
 ///   arbitrage; use more steps).
 ///
@@ -40,10 +43,10 @@ pub fn price(
     style: ExerciseStyle,
     steps: usize,
 ) -> Result<f64> {
-    if steps == 0 {
+    if steps == 0 || steps > MAX_STEPS {
         return Err(QuantError::InvalidInput {
             name: "steps",
-            reason: "must be at least 1",
+            reason: "must be between 1 and 100000",
         });
     }
     let n = steps;
@@ -147,24 +150,26 @@ mod tests {
             .unwrap()
     }
 
-    /// Hull, *Options, Futures, and Other Derivatives*, binomial trees
-    /// chapter: two-step American put, S0 = 50, K = 52, r = 5%, sigma = 30%,
-    /// T = 2 years, gives 7.43 (u = 1.3499, d = 0.7408, p = 0.5097).
+    // Reference values from an independent Python CRR implementation (plain
+    // loops, double precision). They agree with figures that, as far as the
+    // author recalls, Hull's *Options, Futures, and Other Derivatives* prints
+    // for these setups (7.43 and 4.49), but those textbook figures could not
+    // be looked up, so they are not used as the reference.
+
+    /// Two-step American put: S0 = 50, K = 52, r = 5%, sigma = 30%, T = 2.
     #[test]
-    fn hull_two_step_american_put() {
+    fn two_step_american_put_matches_independent_reference() {
         let p = params(50.0, 52.0, 0.05, 0.0, 0.30, 2.0);
         let v = price(&p, OptionType::Put, ExerciseStyle::American, 2).unwrap();
-        assert!((v - 7.43).abs() < 0.005, "v = {v}");
+        assert!((v - 7.428_401_902_704_835).abs() < 1e-12, "v = {v}");
     }
 
-    /// Hull, same chapter's numerical-procedures figure: American put with
-    /// S0 = 50, K = 50, r = 10%, sigma = 40%, T = 5 months on a five-step
-    /// tree is worth 4.49.
+    /// Five-step American put: S0 = 50, K = 50, r = 10%, sigma = 40%, T = 5/12.
     #[test]
-    fn hull_five_step_american_put() {
+    fn five_step_american_put_matches_independent_reference() {
         let p = params(50.0, 50.0, 0.10, 0.0, 0.40, 5.0 / 12.0);
         let v = price(&p, OptionType::Put, ExerciseStyle::American, 5).unwrap();
-        assert!((v - 4.49).abs() < 0.005, "v = {v}");
+        assert!((v - 4.488_458_534_725_916).abs() < 1e-12, "v = {v}");
     }
 
     #[test]

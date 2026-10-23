@@ -127,6 +127,9 @@ pub fn implied_vol(quotes: &[IvQuote]) -> Vec<Result<f64>> {
     map(quotes, |q| implied_vol::solve(&q.contract, q.kind, q.price))
 }
 
+/// Largest grid [`grid`] will build.
+const MAX_GRID: usize = 100_000_000;
+
 /// Builds every combination of the given inputs as validated
 /// [`OptionParams`].
 ///
@@ -136,7 +139,8 @@ pub fn implied_vol(quotes: &[IvQuote]) -> Vec<Result<f64>> {
 /// # Errors
 ///
 /// The first invalid combination (for example a non-positive strike in
-/// `strikes`) is returned as an error.
+/// `strikes`) is returned as an error, as is a grid of more than 100 million
+/// combinations.
 ///
 /// # Examples
 ///
@@ -156,7 +160,17 @@ pub fn grid(
     rate: f64,
     dividend_yield: f64,
 ) -> Result<Vec<OptionParams>> {
-    let mut out = Vec::with_capacity(spots.len() * strikes.len() * expiries.len() * vols.len());
+    let total = spots
+        .len()
+        .checked_mul(strikes.len())
+        .and_then(|n| n.checked_mul(expiries.len()))
+        .and_then(|n| n.checked_mul(vols.len()))
+        .filter(|&n| n <= MAX_GRID)
+        .ok_or(crate::error::QuantError::InvalidInput {
+            name: "grid",
+            reason: "more than 100 million combinations",
+        })?;
+    let mut out = Vec::with_capacity(total);
     for &s in spots {
         for &k in strikes {
             for &t in expiries {

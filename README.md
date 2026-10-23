@@ -12,7 +12,7 @@ quantkit = "0.2"
 # quantkit = { version = "0.2", features = ["serde", "parallel"] }
 ```
 
-Minimum supported Rust version: 1.74 (declared in `Cargo.toml`; only the current stable toolchain has been tested so far, and the optional `serde` and `rayon` dependencies may need something newer).
+Minimum supported Rust version: 1.74. The library, including the `serde` and `parallel` features, builds and passes its 74 unit tests on Rust 1.74 when dependencies are resolved with a Rust-version-aware lockfile (`CARGO_RESOLVER_INCOMPATIBLE_RUST_VERSIONS=fallback`). Without that, a fresh resolve may pick dependency releases that need a newer compiler. Dev-only tools (criterion, proptest integration tests) are tested on current stable.
 
 ## Usage
 
@@ -105,15 +105,16 @@ Conventions worth knowing: vega is per 1.00 of volatility, rho per 1.00 of rate,
 
 ## Accuracy and validation
 
-- BSM prices are checked against Hull's textbook example (S=42, K=40, r=10%, sigma=20%, T=0.5: call 4.76, put 0.81), Hull's Greeks example (S=49, K=50, r=5%, sigma=20%, T=20 weeks) and Hull's implied-volatility example (call 1.875 gives about 23.5%). Hull values are published to two or three digits, so those tests use matching tolerances.
-- Higher-precision checks (to about 1e-11) compare against an independent Python implementation built on `math.erfc`. These guard against implementation slips; they are not independent derivations of the formulas.
-- The binomial pricer reproduces Hull's two-step American put (7.43) and five-step American put (4.49), and converges to BSM as steps increase (CRR oscillates, so convergence is not monotone).
+- BSM prices are checked against Hull's textbook example (S=42, K=40, r=10%, sigma=20%, T=0.5: call 4.76, put 0.81). That is the one figure set taken as given; it is the example named in the project brief. Hull's Greeks example (S=49, K=50, r=5%, sigma=20%, T=20 weeks; delta 0.522, gamma 0.066, vega 12.1, theta -4.31) and implied-volatility example (call 1.875 gives about 23.5%) were confirmed through secondary sources that quote the book, not the book itself. Hull values are published to two or three digits, so those tests use matching tolerances.
+- Higher-precision checks (to about 1e-11) compare against independent Python implementations (`math.erfc` for Black-Scholes, plain loops for the CRR tree). These guard against implementation slips; they are not independent derivations of the formulas. The binomial tests deliberately do not rely on remembered textbook numbers for the two- and five-step American puts.
+- The CRR tree converges to BSM as steps increase (CRR oscillates, so convergence is not monotone).
 - Monte Carlo is tested against the closed form within standard errors (fixed seeds, so results are deterministic) and Longstaff-Schwartz against the binomial tree. The random number generator is checked statistically (moments, tail mass), not against published test vectors.
 - SVI fitting is tested on noise-free and noisy synthetic data generated from known parameters; the surface arbitrage checks are tested on constructed violations. The SVI butterfly density `g(k)` follows Gatheral and Jacquier (2014) and has not been checked against a second implementation.
+- A robustness suite feeds NaN, infinities, zeros, extreme magnitudes and oversized step/path counts to every public entry point and requires `Ok` or `Err`, never a panic. It found and fixed integer-overflow panics in the binomial and Monte Carlo size handling.
 - Property tests (proptest) cover put-call parity, monotonicity in spot, delta bounds, American >= European, no-arbitrage price bounds, implied-vol round trips, SVI round trips, Monte Carlo vs closed form, and VaR/CVaR/drawdown invariants.
 - The normal CDF uses `libm::erfc` (about 1 ulp, with relative accuracy in the tails).
 
-Limits: the CRR tree is `O(n^2)` and its Greeks are finite differences, so they are noisier than the analytic ones. Implied volatility is ill-conditioned for deep in-the-money options priced at intrinsic value; the solver returns a volatility that reprices the option, which need not equal the volatility you started from. Plain Monte Carlo is unreliable for deep out-of-the-money options (almost every path pays zero). Longstaff-Schwartz is biased slightly low. The surface arbitrage checks look at the quoted nodes only, and the SVI fit does not enforce the butterfly condition (check it with `SviParams::is_butterfly_free`).
+Limits: the CRR tree is `O(n^2)` and capped at 100,000 steps; Longstaff-Schwartz is capped at 100 million path-steps (about 800 MB). The CRR tree and its Greeks are finite differences, so they are noisier than the analytic ones. Implied volatility is ill-conditioned for deep in-the-money options priced at intrinsic value; the solver returns a volatility that reprices the option, which need not equal the volatility you started from. Plain Monte Carlo is unreliable for deep out-of-the-money options (almost every path pays zero). Longstaff-Schwartz is biased slightly low. The surface arbitrage checks look at the quoted nodes only, and the SVI fit does not enforce the butterfly condition (check it with `SviParams::is_butterfly_free`).
 
 This crate is provided for education and research, with no warranty, and is not investment advice.
 

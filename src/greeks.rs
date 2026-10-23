@@ -142,6 +142,8 @@ impl Default for Bumps {
 /// # Errors
 ///
 /// Propagates any error from `price`, and from re-validating bumped inputs.
+/// Also returns [`crate::QuantError::InvalidInput`] if any bump size is not
+/// finite and strictly positive.
 ///
 /// # Examples
 ///
@@ -157,6 +159,19 @@ pub fn numerical<F>(p: &OptionParams, price: F, bumps: Bumps) -> Result<Greeks>
 where
     F: Fn(&OptionParams) -> Result<f64>,
 {
+    for (name, v) in [
+        ("bumps.spot_rel", bumps.spot_rel),
+        ("bumps.vol", bumps.vol),
+        ("bumps.rate", bumps.rate),
+        ("bumps.time", bumps.time),
+    ] {
+        if !(v.is_finite() && v > 0.0) {
+            return Err(crate::error::QuantError::InvalidInput {
+                name,
+                reason: "bump sizes must be finite and strictly positive",
+            });
+        }
+    }
     let base = price(p)?;
 
     let hs = p.spot() * bumps.spot_rel;
@@ -208,8 +223,10 @@ mod tests {
 
     /// Hull, *Options, Futures, and Other Derivatives*, Greeks chapter:
     /// S0 = 49, K = 50, r = 5%, sigma = 20%, T = 20 weeks, call.
-    /// Published: delta 0.522, gamma 0.066, theta -4.31 (per year),
-    /// vega 12.1, rho 8.91.
+    /// Published (as reported by a secondary source; the book itself was not
+    /// available): delta 0.522, gamma 0.066, vega 12.1, theta -4.31 per year.
+    /// Hull's rho figure could not be confirmed, so rho is checked against an
+    /// independent Python computation instead.
     #[test]
     fn hull_greeks_example() {
         let p = params(49.0, 50.0, 0.05, 0.0, 0.2, 20.0 / 52.0);
@@ -218,7 +235,7 @@ mod tests {
         assert!((g.gamma - 0.066).abs() < 5e-4);
         assert!((g.theta - -4.31).abs() < 5e-3);
         assert!((g.vega - 12.1).abs() < 0.05);
-        assert!((g.rho - 8.91).abs() < 5e-3);
+        assert!((g.rho - 8.906_961_949_608_35).abs() < 1e-9);
     }
 
     // Independent Python 3 (`math.erfc`) computation, double precision.
@@ -263,6 +280,34 @@ mod tests {
                 assert!((a.vega - n.vega).abs() < 1e-3, "vega");
                 assert!((a.theta - n.theta).abs() < 1e-3, "theta");
                 assert!((a.rho - n.rho).abs() < 1e-3, "rho");
+            }
+        }
+    }
+
+    #[test]
+    fn numerical_rejects_bad_bumps() {
+        let p = params(100.0, 100.0, 0.05, 0.0, 0.2, 1.0);
+        let price = |x: &OptionParams| Ok(bsm::price(x, OptionType::Call));
+        for bad in [0.0, -1e-3, f64::NAN, f64::INFINITY] {
+            for b in [
+                Bumps {
+                    spot_rel: bad,
+                    ..Bumps::default()
+                },
+                Bumps {
+                    vol: bad,
+                    ..Bumps::default()
+                },
+                Bumps {
+                    rate: bad,
+                    ..Bumps::default()
+                },
+                Bumps {
+                    time: bad,
+                    ..Bumps::default()
+                },
+            ] {
+                assert!(numerical(&p, price, b).is_err());
             }
         }
     }

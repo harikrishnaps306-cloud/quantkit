@@ -146,6 +146,9 @@ impl McResult {
     }
 }
 
+/// Upper bound on `paths * steps` for [`american_lsm`], which stores every path.
+const MAX_LSM_CELLS: usize = 100_000_000;
+
 fn check_config(cfg: &McConfig) -> Result<()> {
     if cfg.paths < 2 {
         return Err(QuantError::InvalidInput {
@@ -205,29 +208,35 @@ pub fn european(p: &OptionParams, kind: OptionType, cfg: McConfig) -> Result<McR
     let disc = (-p.rate() * t).exp();
     let terminal = |z: f64| p.spot() * (drift + diffusion * z).exp();
 
-    let samples: Vec<f64> = if cfg.antithetic {
-        (0..cfg.paths / 2)
-            .map(|_| {
-                let z = rng.next_normal();
-                0.5 * (payoff(kind, terminal(z), p.strike())
-                    + payoff(kind, terminal(-z), p.strike()))
-            })
-            .collect()
-    } else {
-        (0..cfg.paths)
-            .map(|_| payoff(kind, terminal(rng.next_normal()), p.strike()))
-            .collect()
+    // Welford's streaming mean and variance: constant memory for any path count.
+    let (mut count, mut mean, mut m2) = (0u64, 0.0_f64, 0.0_f64);
+    let mut add = |x: f64| {
+        count += 1;
+        let delta = x - mean;
+        mean += delta / count as f64;
+        m2 += delta * (x - mean);
     };
-    if samples.len() < 2 {
+    if cfg.antithetic {
+        for _ in 0..cfg.paths / 2 {
+            let z = rng.next_normal();
+            add(0.5
+                * (payoff(kind, terminal(z), p.strike()) + payoff(kind, terminal(-z), p.strike())));
+        }
+    } else {
+        for _ in 0..cfg.paths {
+            add(payoff(kind, terminal(rng.next_normal()), p.strike()));
+        }
+    }
+    if count < 2 {
         return Err(QuantError::InvalidInput {
             name: "paths",
             reason: "too few paths for antithetic sampling",
         });
     }
-    let (m, se) = mean_and_se(&samples);
+    let std_error = (m2 / (count - 1) as f64 / count as f64).sqrt();
     Ok(McResult {
-        price: disc * m,
-        std_error: disc * se,
+        price: disc * mean,
+        std_error: disc * std_error,
     })
 }
 
@@ -245,7 +254,8 @@ pub fn european(p: &OptionParams, kind: OptionType, cfg: McConfig) -> Result<McR
 ///
 /// # Errors
 ///
-/// [`QuantError::InvalidInput`] if `paths < 2` or `steps == 0`.
+/// [`QuantError::InvalidInput`] if `paths < 2`, `steps == 0`, or
+/// `paths * steps` exceeds 100 million (the paths are held in memory).
 ///
 /// # Examples
 ///
@@ -274,6 +284,15 @@ pub fn american_lsm(
         });
     }
     let n = cfg.paths;
+    match n.checked_mul(steps) {
+        Some(cells) if cells <= MAX_LSM_CELLS => {}
+        _ => {
+            return Err(QuantError::InvalidInput {
+                name: "paths",
+                reason: "paths * steps exceeds the 100 million cell limit (about 800 MB)",
+            })
+        }
+    }
     let dt = p.expiry() / steps as f64;
     let drift = (p.rate() - p.dividend_yield() - 0.5 * p.volatility() * p.volatility()) * dt;
     let diffusion = p.volatility() * dt.sqrt();

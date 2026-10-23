@@ -14,6 +14,12 @@ follows [Semantic Versioning](https://semver.org/).
 - `batch`: batch price, Greeks, binomial and implied-vol functions; `grid` for option-grid generation.
 - Cargo features `serde` (validated deserialization of option inputs) and `parallel` (rayon-backed batch functions).
 - `python/`: PyO3 + maturin bindings with NumPy batch functions (not yet published).
+- Robustness test suite (`tests/no_panic.rs`).
+
+### Changed
+- Binomial steps are limited to 100,000, Longstaff-Schwartz to 100 million path-steps, and grids to 100 million combinations; larger requests return `InvalidInput` instead of overflowing.
+- European Monte Carlo now streams its statistics (constant memory).
+- `greeks::numerical` rejects non-positive or non-finite bump sizes.
 
 ## [0.1.0]
 

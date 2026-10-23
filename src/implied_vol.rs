@@ -214,7 +214,8 @@ mod tests {
 
     /// Hull, *Options, Futures, and Other Derivatives*, implied volatility
     /// section: S0 = 21, K = 20, r = 10%, T = 3 months, c = 1.875 gives an
-    /// implied volatility of 0.235.
+    /// implied volatility of 0.235 (confirmed via a secondary source quoting
+    /// the book).
     #[test]
     fn hull_implied_vol_example() {
         let c = contract(21.0, 20.0, 0.10, 0.0, 0.25);
