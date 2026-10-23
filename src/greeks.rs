@@ -197,7 +197,7 @@ where
         let x2 = x + sign * 2.0 * h;
         let x3 = x + sign * 3.0 * h;
         let step = sign * (x1 - x);
-        if !(step >= floor) || ((x2 - x1) * sign - step).abs() > 1e-6 * step {
+        if step.is_nan() || step < floor || ((x2 - x1) * sign - step).abs() > 1e-6 * step {
             return Err(QuantError::InvalidInput {
                 name: "bumps",
                 reason: "bump is too small for one-sided differences",

@@ -20,15 +20,21 @@ Within that domain the closed-form price and all five analytic Greeks are
 finite, the price is non-negative and below its no-arbitrage upper bound, and
 put-call parity holds to `1e-9` of the discounted-asset scale
 (`tests/domain.rs` sweeps the boundary and interior values of every parameter,
-over 10,000 accepted combinations, and checks this). Outside it you get an error, not a
+over 10,000 accepted combinations, and checks this; that is evidence from a
+finite grid, not a proof over the whole domain). Outside it you get an error, not a
 `NaN`.
 
-**Zero volatility and zero expiry are rejected, not approximated.** At those
-points Black-Scholes degenerates to the discounted forward intrinsic value;
-gamma and vega are undefined or discontinuous there, and quantkit does not
-manufacture finite numbers for them. Near the boundary the price converges to
-that limit (`smallest_supported_vol_gives_forward_intrinsic_value`), so for a
-deterministic payoff compute `max(S e^{-qT} - K e^{-rT}, 0)` directly.
+**Zero volatility and zero expiry are rejected, not approximated.** At
+`sigma = 0` or `T = 0` the price is the discounted forward intrinsic value,
+`max(S e^{-qT} - K e^{-rT}, 0)`, which is not differentiable at `K = F`. Away
+from `K = F` the Greeks have limits (delta tends to 0 or 1, gamma and vega to
+0). At `K = F` they do not agree with those limits: delta is a step, gamma a
+point mass, and vega tends to a different, finite value (`S e^{-qT} phi(0)
+sqrt(T)` as `sigma -> 0`; `0` as `T -> 0`). Because the limits are
+discontinuous in moneyness, no single finite number is right, and quantkit
+does not evaluate at those points. Near the boundary the price converges to the
+intrinsic limit (`smallest_supported_vol_gives_forward_intrinsic_value`); for a
+deterministic payoff compute it directly.
 
 Rounding can make the difference of two nearly equal terms slightly negative
 (about `1e-16` of the term size); the BSM price is clamped to `0.0` in that
@@ -87,22 +93,43 @@ formed in logarithms, so they are as accurate as the output type allows.
   `p = (e^{(r-q) dt} - d) / (u - d)`. The probability must lie in `(0, 1)`;
   otherwise the call is rejected with an error (typically too few steps for a
   large `|r-q|` and small volatility).
-* Early exercise is allowed at the `steps + 1` tree nodes' dates, i.e. this is
+* Early exercise is allowed at the tree's `steps + 1` dates, i.e. this is
   a **Bermudan option with `steps` exercise dates** that approaches the American
   value as `steps` grows. Steps are limited to 100,000 (`O(steps^2)` work).
 * The price is not monotone in `steps` (CRR oscillates); convergence is
   tested as a tolerance, not as monotonicity.
-* Exact structural properties that are tested: with `r = 0` an American put
-  equals the European put; with `q = 0` an American call equals the European
-  call; and a long-dated American put approaches McKean's closed-form
-  perpetual-put value from below (`tests/references.rs`).
-* **Numerical Greeks** (`greeks::numerical`, `binomial::greeks`) are central
-  differences with bumps (`spot 0.5%`, `vol 0.001`, `rate 1e-4`,
-  `time 1/365`, shrunk to stay valid; all must be positive and finite). A CRR
-  price is not smooth in spot at the scale of the node spacing, so
-  `binomial::greeks` widens the spot bump to four node spacings (max 10%).
-  Expect gamma to be noisy; the analytic European Greeks are the accurate
-  reference.
+* **When early exercise has no value.** Exactly on the tree (and in the
+  continuous model): an American **call** equals the European call if
+  `q <= 0` **and** `r >= 0`; an American **put** equals the European put if
+  `r <= 0` **and** `q >= 0`. These conditions are sufficient, not necessary,
+  and neither `q = 0` alone nor `r = 0` alone is enough now that negative rates
+  and negative dividend yields are supported: a call with `q = 0` and `r < 0`
+  (and, by call-put symmetry, a put with `r = 0` and `q < 0`) can be worth more
+  American than European. Both the identities and the counterexamples are
+  tested (`american_equals_european_under_the_sufficient_conditions`,
+  `early_exercise_has_value_when_the_sufficient_conditions_fail`). A long-dated
+  American put also approaches McKean's closed-form perpetual-put value from
+  below.
+* **Numerical Greeks** (`greeks::numerical`, `binomial::greeks`) are finite
+  differences of the supplied pricer.
+  * Steps are the *actual* floating-point differences `(x + h) - x` and
+    `x - (x - h)`, so a bump that rounding partly absorbs is neither silently
+    mis-scaled nor divided by zero; a bump that changes the input by less than
+    `1e-6` of its scale (the parameter itself; for the rate, `max(|rate|,
+    0.01)`) is rejected with `InvalidInput`, because second differences of such
+    steps are rounding noise.
+  * If a neighbour is outside the supported domain (spot near `1e-8` or `1e12`,
+    a rate or `|rate| T` at its limit, volatility or expiry near their
+    minimum), the second-order one-sided formulas on the valid side are used.
+  * A pricer value that is not finite is an error, never an input to the
+    differences.
+  * `Bumps::default()` assumes ordinary magnitudes. At extreme values (for
+    example volatility `1000`) its absolute volatility and time bumps fall under
+    the `1e-6` floor and are rejected; pass explicit bumps there.
+  * A CRR price is not smooth in spot at the scale of the node spacing, so
+    `binomial::greeks` widens the spot bump to four node spacings (max 10%).
+    Expect gamma to be noisy; the analytic European Greeks are the accurate
+    reference.
 
 ## 4. Implied volatility
 
@@ -112,95 +139,174 @@ forms `ln(beta) = ln(time value) - ln(sqrt(Se^{-qT} Ke^{-rT}))`, and solves
 `ln b(-|x|, s) = ln(beta)` for `s = sigma sqrt(T)` with a Newton iteration
 (derivative `db/ds = exp(-x^2/(2 s^2) - s^2/8)/sqrt(2 pi)`, a closed form),
 safeguarded by a bracket `[MIN_VOL, MAX_VOL] sqrt(T)` and geometric bisection.
-Because the equation is in logarithms, a price of `1e-300` is as well
-conditioned as a price of `1`, and `b` never underflows.
+
+**What logarithms do and do not buy.** Working in logarithms keeps tiny prices
+from underflowing and makes the iteration scale-free. It does not create
+information. How much the price says about the volatility is its *conditioning*,
+the elasticity `d ln price / d ln vol` (`IvSolution::elasticity`, computed in
+logs so it cannot underflow): a relative price error `e` becomes a relative
+volatility error of about `e / elasticity`. The elasticity is large in the far
+tails (a price of `1e-300` pins the volatility down well, because it is
+extremely sensitive to it), and small when the price is saturated against its
+upper bound or an in-the-money price is almost all intrinsic value. A price of
+`1e-300` is therefore *not* "as well conditioned as a price of 1" in general:
+it is better or worse depending on where it sits, and the returned
+elasticity says which.
 
 This is in the spirit of Jaeckel's "Let's Be Rational" (normalised Black
-function, log-domain inversion) but it is **not** that algorithm: it has no
-rational-function starting guess and no Householder(3) step, so it takes
-several evaluations instead of two. Speed and accuracy are measured, not
-assumed (see `docs/BENCHMARKS.md`).
+function, log-domain inversion) but it is **not** that algorithm and no
+equivalence is claimed: it has no rational-function starting guess and no
+Householder(3) step, so it takes several evaluations instead of two.
 
-Guarantee:
+Acceptance and failures:
 
-* **`Ok(sol)`**: `|BSM(sol.vol) - price| <= (tol + 4 eps + 8 eps (1 + |ln price|)) * price`
-  with `tol = max(tolerance, 8 eps)`, and `sol.vol` is inside the supported
-  range. `sol.residual` is that absolute error. The last term is the rounding
-  noise of evaluating a tiny price as an exponential; it is below `1e-13` for
-  prices above `1e-30` and at most about `7e-13` at the smallest normal price.
-* **Accuracy of the recovered volatility.** Out of the money, and while the
-  price is not saturated against its upper bound (`s = sigma sqrt(T)` below
-  about 8), the inversion is well conditioned (`d ln b / d ln s >= 1`), and against prices from 150-digit
-  arithmetic the solver recovers the generating volatility to a relative
-  error of `1.1e-13` over 122 cases with `|d1|` from 0 to 36, expiries from
-  0.003 to 1 year, volatilities 0.05 to 0.8, calls and puts, with rates and
-  dividends (`implied_vol_recovers_the_true_volatility_deep_into_the_tails`).
-* **Not guaranteed**: recovery when the price is saturated at its upper bound
-  (`s` of 10 or more: a call worth the spot to 8-16 digits has almost no
-  volatility information; in a 400,000-row random sweep every one of the 681
-  out-of-the-money recoveries worse than `1e-9` had `s >= 8`). Also not
-  guaranteed: recovery of the generating volatility for in-the-money
-  options whose time value is tiny next to the intrinsic value. There the
-  *time value* is the difference of two nearly equal prices and carries the
-  absolute rounding error of the input price; the volatility error is about
-  `residual / vega`, and `sol.vega` is returned so you can judge it
-  (`iv_round_trip_error_is_bounded_by_residual_over_vega`). A random sweep of
-  400,000 self-priced options found that every `PriceOutOfBounds` among them
-  (123,556, 31%) was an in-the-money option whose price equals its intrinsic
-  value in `f64`, i.e. carries no time-value information.
-* **`Err`**: `PriceOutOfBounds` (outside the no-arbitrage range, or outside
-  what the supported volatility range can produce) or `NoConvergence`
-  (carries the last residual and the iteration count).
-* Default tolerance `1e-12` relative to the price; default budget 100
-  iterations.
+* **`Ok(sol)`**: `|BSM(sol.vol) - price| <= (tol + 4 eps + 8 eps (1 + |ln price|))
+  * price`, with `tol = max(tolerance, 8 eps)`, or an absolute floor of
+  four smallest-subnormals if that is larger. `sol.residual` is the absolute
+  error, so the returned residual is directly comparable with this bound. The
+  `8 eps (1 + |ln price|)` term is the rounding noise of evaluating a tiny
+  price as an exponential (below `1e-13` for prices above `1e-30`, at most
+  about `7e-13` near the smallest normal price); the floor keeps the criterion
+  meaningful for subnormal prices, where a relative tolerance rounds to zero.
+* **`PriceOutOfBounds`**: outside the no-arbitrage range, outside what the
+  supported volatility range can produce, or an in-the-money price whose time
+  value is below `8 eps` times the price: price and intrinsic value are both
+  rounded numbers, so such a time value is rounding noise of the input and
+  carries no volatility information (in a 400,000-row random sweep every
+  rejection of a self-priced option was of this kind).
+* **`NoConvergence`**: the iteration budget or floating-point resolution was
+  exhausted; it carries the last residual and iteration count.
+* An in-the-money price with a visible but tiny time value is accepted, and
+  its small elasticity reports that the volatility is poorly determined.
+  Recovery of the generating volatility is not claimed there.
+
+Accuracy evidence (separate from the guarantee above, and evidence on finite
+samples, not a proof over the supported domain). All references are 150-digit
+`mpmath` computations on the *exact binary inputs*, written independently of
+the Rust code:
+
+* 110 hand-chosen points of the normalised function (`x` from `-1e-12` to
+  `-2000`, `s` from `1e-9` to `3000`), 244 further seeded random and
+  branch-boundary points (including `s` just either side of 2 and the internal
+  `u1 = 5` switch), all within the allowed `8 eps (1 + (x/s)^2) + 3e-14`; the
+  worst uses 17% of that allowance (`tests/black_accuracy.rs`).
+* 160 seeded random contracts priced end to end (`bsm::price`): worst relative
+  error `2.2e-13`. For each the generator also measures how much the price
+  would change merely from rounding the derived `x = ln(F/K)` and `s =
+  sigma sqrt(T)` to `f64`, which no `f64` implementation can avoid; the test
+  allows the algorithm's error budget plus twice that measured effect. That
+  rounding effect reached `4.8e-11` for some contracts (near `K = F` the sum
+  `ln(S/K) + (r - q)T` cancels), so a large end-to-end deviation is not
+  automatically an algorithm error, and the achieved error was well inside it.
+* The 122 hand-chosen contracts and the out-of-the-money subset of the 160 random ones: the generating
+  volatility is recovered to a relative error of `1.1e-13` (hand-chosen) and
+  within `2e-12` plus the input-rounding effect (random).
+* Seeded sweeps of self-priced options (`seeded_sweep_price_to_iv_to_price`):
+  the residual bound holds for every solved row; the only failures are the
+  time-value rejections above; out-of-the-money volatilities are recovered to
+  `1e-9` while `s < 6`. In an earlier 400,000-row sweep the 681 poorly
+  recovered out-of-the-money rows all had `s >= 8`, where the price is
+  saturated (a call worth the spot to 8-16 digits).
+
+Internal checks of the evaluation: the fast formula and the stable evaluation
+agree to `5e-14` wherever the fast formula is used (30,000 random points);
+the two stable branches (log-difference and quadrature) agree across their
+switch (`s = 2`, `u1 = 5`); the quadrature is converged (8x finer panels
+change it by under `3e-14`); and Mills' ratio continued fraction agrees with
+the direct formula at its switch point.
 
 ## 5. Monte Carlo
 
 * Risk-neutral GBM, exact simulation, constant-rate discounting.
-* `std_error` is the **sampling** standard error of the mean (antithetic pairs
-  are averaged first). It does **not** include model, discretisation, or
-  (for American options) exercise-policy error. A normal confidence interval
-  from it is reliable for thousands of paths on non-extreme payoffs; plain
-  Monte Carlo is unreliable for deep out-of-the-money payoffs where almost
-  every path pays zero.
-* **Reproducibility.** Results are a pure function of
-  `(inputs, paths, seed, antithetic, steps)` and the crate version. They do not
-  depend on the thread count (work is split into fixed 4096-sample blocks, each
-  with its own stream from `Rng::for_stream(seed, block)`, merged in block
-  order) and are bitwise identical across platforms, because the generator,
-  `exp`, `log`, `sin`/`cos` and the normal CDF use pure-Rust `libm` and
-  IEEE-exact operations. Locally verified: serial, `parallel` with 1 and 7
-  threads, debug and release, and Rust 1.74 all give identical bits
-  (`european_bitwise_regression_lock`). Other operating systems are covered by
-  CI configuration that has not yet run.
-* Streams for different `(seed, stream)` pairs come from independently hashed
-  seeds: overlap is astronomically unlikely but not *proved* impossible (no
-  jump-ahead). Distinct blocks and the training/evaluation domains were
-  checked for output collisions (`streams_do_not_collide`).
-* The generator is checked statistically (moments, tail mass), not against
-  published test vectors.
+* **Overflow-safe evaluation.** European paths are evaluated in *discounted*
+  units divided by `c = max(S e^{-qT}, K e^{-rT})`, so the simulated values
+  stay `O(1)` even when `S_T` itself overflows (for example `r = 10`, `q = -10`,
+  `T = 50`: `S_T ~ e^{1000}` while the discounted price is `1.4e219`). Variance
+  accumulation uses the scaled values too. If the *result* still cannot be
+  represented, or a simulated value overflows, the call returns
+  `QuantError::NonFinite`; it never returns `Ok` with `NaN` or infinity, and a
+  batch row for such a case has a non-`Ok` status. American Monte Carlo checks
+  its simulated prices and its outputs the same way and returns `NonFinite`
+  rather than normalising (the regression variables are `S/K`).
+* `std_error` is the **sampling** standard error of the mean over
+  independent observations (an antithetic pair is averaged first and counts
+  once; at least two observations, i.e. four antithetic paths, are required).
+  It does **not** include model, discretisation, or (for American options)
+  exercise-policy error. A normal confidence interval from it is reliable for
+  thousands of paths on non-extreme payoffs; plain Monte Carlo is unreliable
+  for deep out-of-the-money payoffs where almost every path pays zero.
+* **Uniform draws.** `next_f64` returns one of `2^52` equally spaced midpoints
+  `(k + 1/2) / 2^52` from the top 52 bits of a draw, so it is strictly inside
+  `(0, 1)`: the smallest value is `2^-53` and the largest `1 - 2^-53`. An
+  earlier mapping with a 53-bit grid rounded to exactly `1.0` at its top end.
+  The change shifted the stream of normals by about one part in `2^52`, which
+  is why the regression locks below were deliberately re-recorded in the same
+  commit that fixed it.
+* **PRNG correctness.** `xoshiro256++` reproduces the ten-word reference vector
+  for the state `1, 2, 3, 4` published with the reference implementation (read
+  from the `rand_xoshiro` source, which states the values come from
+  `xoshiro256plusplus.c`), and `splitmix64` reproduces a five-word vector; both
+  also match an independent pure-Python implementation
+  (`benchmarks/prng_check.py`). The moment/tail checks are separate, weaker,
+  statistical tests.
+* **Streams.** Four distinct things: *distinct stream identifiers* (labels the
+  code assigns), *distinct initial states* (what `Rng::for_stream` gives in
+  practice by hashing `(seed, stream)` to a 64-bit seed; the hash is not
+  proved injective), *non-overlapping sequences* (**not** guaranteed: there is
+  no jump-ahead, only a `2^256 - 1` period making overlap astronomically
+  unlikely), and *statistical independence* (assumed, not proved). The test
+  `streams_show_no_output_collisions` is evidence of the second, not a proof of
+  the third.
+* **Reproducibility.** Results are a function of inputs, `paths`, `seed`,
+  `antithetic`, `steps`, the crate version, the compiler and the `libm`
+  version, and do not depend on the thread count (fixed 4096-sample blocks,
+  merged in block order). The code avoids platform dependence by using
+  IEEE-exact operations and pure-Rust `libm` instead of the platform math
+  library, but that is a design, not a proof; see section 8 for what has
+  actually been checked. Upgrading `libm` or the compiler could, in principle,
+  change low-order bits; the golden values are regression locks for a pinned
+  toolchain, not promises about future builds.
 
 ### Longstaff-Schwartz
 
 * Regression of discounted continuation cash flows of in-the-money paths on
   `1, z, z^2`, `z = (S/K - mean)/sd` (standardised per date, minimum 10
-  in-the-money paths, singular fits counted in `regression_failures`; a date
-  without a fit means "never exercise early" there).
-* **Training and evaluation use independent paths** from disjoint stream
-  domains, even if the two configs share a seed. The out-of-sample price is
-  the value of a *feasible* stopping rule, so it is biased low relative to the
-  Bermudan value, and it comes with a valid sampling standard error. The
-  in-sample price reuses the regression's paths and is biased high; the gap
-  is reported as a diagnostic. Test: over 200 small samples the in-sample
-  estimate exceeds the independent estimate by more than 3 standard errors
-  of the gap, and the independent estimate does not exceed the converged tree
-  value beyond sampling error (`lsm_in_sample_is_biased_high_and_out_of_sample_is_not`).
-* `price` is floored at the immediate-exercise payoff (exercising now is a
-  feasible rule); `std_error` is for the unfloored mean.
+  in-the-money paths; singular or non-finite fits are counted in
+  `regression_failures`; a date without a fit means "never exercise early"
+  there).
+* **The policy is fixed before it is evaluated.** The regressions at the
+  interior dates *and* the time-zero decision (`exercise_now`: immediate payoff
+  exceeds the training paths' continuation estimate) come from the training
+  paths only. The evaluation paths, drawn from different stream identifiers, then
+  measure the value of that fixed policy.
+* `price` / `std_error` are the value of that fixed policy: the exact immediate
+  payoff with standard error `0` if `exercise_now`, otherwise the evaluation
+  mean with its sampling standard error. Conditional on the trained policy the
+  evaluation mean is unbiased for the policy's value, and a feasible stopping
+  rule cannot be worth more than the optimal Bermudan value, so in expectation
+  over the evaluation sample `price` does not exceed that value. No claim is
+  made that it is close to it (the size of the shortfall depends on the
+  policy), and "slightly low" is not asserted anywhere.
+* The standard error is **conditional on the trained policy**: it excludes the
+  variation of the policy across training samples, the learned-versus-optimal
+  policy gap, discretisation (a Bermudan value is below the American value) and
+  model error. Intervals from it do not cover those.
+* `continuation_value` is the raw evaluation mean of the no-exercise-at-zero
+  policy. `floored_price()` is `max(price, immediate payoff)` for display only;
+  a maximum taken after the fact is optimistically biased and has no valid
+  error bar. An earlier version returned exactly that maximum as `price` with
+  the unfloored standard error attached; that was wrong and was removed.
+* `in_sample_price` is the continuation value measured on the training paths
+  the regressions were fitted to. Fitting tends to make it optimistic (tested
+  over 200 small samples for one parameter set: the in-sample value exceeded the
+  independent one by more than three standard errors of the gap); it is a
+  diagnostic, not an estimate with a valid error bar, and it is not claimed to
+  bound the true value from above.
+* Counts: `*_paths` are simulated paths; `*_samples` are independent
+  observations (antithetic pairs count once), the quantity that standard errors
+  use.
 * Error sources are distinct: **sampling** (`std_error`), **policy** (not
-  measured; visible only through the in-sample/out-of-sample gap and by
-  comparing with a tree), **discretisation** (`steps` dates), **model**
-  (GBM).
+  measured), **discretisation** (`steps` dates), **model** (GBM).
 
 ## 6. Volatility surfaces and SVI
 
@@ -231,13 +337,39 @@ loss convention, historical VaR rounding of the tail up, annualisation
 assumptions, per-period risk-free rate and Sortino target, drawdown wealth
 path). Successful results are finite; overflow is an error.
 
-## 8. Platform and determinism scope
+### Robustness is not correctness
 
-Bitwise-reproducible across platforms (pure `libm` and IEEE operations):
-the `mc` module, `dist`, `bsm`, `greeks`, and `dataset`. Not guaranteed
-bit-identical across platforms: the binomial pricer, implied-volatility solver,
-`risk` and `surface` modules, which use the standard library's `exp`/`ln`.
-Differences there are at the level of last-place rounding.
+The no-panic suite (`tests/no_panic.rs`) feeds hostile inputs to every public
+entry point and requires `Ok` or `Err`. That shows the library does not abort;
+it says nothing about whether an `Ok` value is right. Finite, correctly scaled
+outputs are checked separately: the supported-domain tests, the 150-digit
+references, the independent-relation tests, and the finiteness checks that turn
+an unrepresentable result into `QuantError::NonFinite`.
+
+## 8. Reproducibility across platforms
+
+**Design.** The `mc` module, `dist`, `bsm`, `black`, `greeks` and `dataset` use
+only IEEE-754 operations and the pure-Rust `libm` crate for `exp`, `log`,
+`sin`, `cos`, `erf`, `erfc`, with fixed evaluation order, so results should not
+depend on the platform's C library or the CPU. The binomial pricer, the risk
+and surface modules, the implied-volatility solver's bounds checks and the
+numerical Greeks use the standard library's `exp`/`ln` and can differ in the
+last place across platforms.
+
+**What was actually checked** (2026-10-23): identical bits for the Monte
+Carlo and dataset golden vectors on `x86_64-pc-windows-msvc` with Rust 1.97.1
+(debug and release; serial; `parallel` with 1 and 7 threads) and with Rust
+1.74.1, all with `libm` 0.2.16. That is one operating system and architecture
+and two compilers.
+
+**What was not checked.** Linux, macOS, ARM, other `libm` versions. The CI
+workflow runs the golden-vector tests on Linux, macOS and Windows, but **it has
+never been executed, so it is not evidence of anything yet**. A future `libm`
+or compiler release could change low-order bits of `exp`, `log` and friends in
+principle; the golden values were recorded with `libm` 0.2.16 and are regression locks,
+not promises across arbitrary dependency upgrades. Re-record them (with an
+explanation, never merely to silence a failure) when a deliberate change
+alters the generated numbers, as the open-interval fix did.
 
 ## 9. Python semantics
 
@@ -249,6 +381,12 @@ Differences there are at the level of last-place rounding.
   `errors='nan'` returns `NaN` for failed rows. The `*_detailed` functions
   always return a `uint8` status per row (`quantkit.STATUS`), the failure
   message, and algorithm diagnostics.
+* `mc_american_detailed` returns `price`/`std_error` for the fixed trained
+  policy plus `exercise_now`, `continuation_value`, the optimistic
+  `in_sample_price`, and both path counts (`*_paths`) and independent-observation
+  counts (`*_samples`).
+* `implied_vol_detailed` returns `elasticity` (`d ln price / d ln vol`) next to
+  `vega`; use it, not `vega`, to judge conditioning (vega can underflow to 0).
 * The GIL is released during computation. Batch work uses a global Rayon pool;
   set `RAYON_NUM_THREADS` or call `quantkit.set_num_threads(n)` before first
   use to avoid oversubscribing CPUs when you also parallelise in Python.

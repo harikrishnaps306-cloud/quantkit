@@ -8,3 +8,6 @@ __pycache__/
 .pytest_cache/
 python/target/
 *.pdb
+# Library crate: the lockfile is not committed (its format and pinned versions would
+# conflict with the declared MSRV); CI resolves dependencies itself.
+/Cargo.lock

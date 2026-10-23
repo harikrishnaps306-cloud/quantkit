@@ -69,7 +69,8 @@ let p = OptionParams::builder().spot(36.0).strike(40.0).rate(0.06).volatility(0.
 let train = mc::McConfig { paths: 20_000, seed: 1, antithetic: true };
 let eval  = mc::McConfig { paths: 100_000, seed: 2, antithetic: true };
 let r = mc::american_lsm_detailed(&p, OptionType::Put, 50, train, eval)?;
-// r.price / r.std_error: independent paths (low-biased). r.in_sample_price: overfit, high-biased.
+// r.price / r.std_error: value of the trained policy on independent paths, and the sampling error
+// of that mean given the policy. r.in_sample_price: measured on the training paths (optimistic).
 
 let ds = dataset::generate(&dataset::DatasetSpec { rows: 10_000, seed: 7, ..Default::default() })?;
 assert!(ds.metadata.invariants.all_passed());   // ds.metadata.checksum, spec, conventions, version
@@ -93,7 +94,7 @@ qk.STATUS                                                                # {'Ok'
 ds = qk.make_dataset(rows=10_000, seed=7)                                # {'columns': {...}, 'metadata': {...}}
 ```
 
-Array arguments must share a shape, scalars broadcast, and all-scalar calls return scalars. `errors="raise"` (default) raises `quantkit.QuantError` naming the first bad row; `errors="nan"` returns `NaN` for failed rows. Set `RAYON_NUM_THREADS` (or call `quantkit.set_num_threads(n)` first) if you also parallelise in Python. The wheel is built with the stable ABI for Python 3.9 and later; only Python 3.11 on Windows has been tested locally.
+Array arguments must share a shape, scalars broadcast, and all-scalar calls return scalars. `errors="raise"` (default) raises `quantkit.QuantError` naming the first bad row; `errors="nan"` returns `NaN` for failed rows. Set `RAYON_NUM_THREADS` (or call `quantkit.set_num_threads(n)` first) if you also parallelise in Python. The wheel is built with the stable ABI and declares `Requires-Python >=3.9` and `numpy>=1.21`. Only Python 3.11 with NumPy 2.4.6 on Windows has actually been tested (including a clean-virtualenv install of the built wheel); the 3.9 and 3.13 interpreters, older NumPy versions, Linux and macOS are covered only by CI that has not run.
 
 ## What it contains
 
@@ -110,8 +111,8 @@ Array arguments must share a shape, scalars broadcast, and all-scalar calls retu
 
 Executed locally (Windows 11, Rust 1.97.1; Python 3.11.9):
 
-* `cargo fmt --check`, `cargo clippy --all-targets --all-features -D warnings`, `cargo doc` with warnings denied, all tests with default features, `--features serde`, `--features parallel` and all features, including 104 unit tests, property tests, a no-panic suite (run once at 30,000 cases per test; 400 by default), domain-boundary tests, independent-reference tests, 150-digit accuracy tests for the pricer and the implied-volatility solver, and 93 doctests.
-* Library unit tests on Rust 1.74 with all features (104 pass, including both bitwise regression locks).
+* `cargo fmt --check`, `cargo clippy --all-targets --all-features -D warnings`, `cargo doc` with warnings denied, all tests with default features, `--features serde`, `--features parallel` and all features, including 123 unit tests, property tests, a no-panic suite (run once at 30,000 cases per test; 400 by default), domain-boundary tests, independent-reference tests, 150-digit accuracy tests for the pricer and the implied-volatility solver, and 93 doctests (158 integration and unit tests in total by default, 159 with `serde`).
+* Library unit tests on Rust 1.74 with all features (123 pass, including the PRNG reference vectors and both bitwise regression locks).
 * Wheel built and installed in a **clean virtualenv**; 19 Python tests pass against the installed wheel.
 * Benchmarks in [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
 
@@ -123,10 +124,10 @@ Reference values: the normalised Black function and implied volatilities against
 
 * Supported input domain is bounded ([docs/NUMERICS.md](docs/NUMERICS.md) section 1); zero volatility and zero expiry are rejected rather than approximated.
 * Implied-volatility accuracy is conditioned by vega: the solver guarantees the *price residual*; out-of-the-money volatilities are recovered to about `1e-13` (checked against 150-digit prices down to `1e-290`), but in-the-money options priced almost at intrinsic value are inherently ill-conditioned. The solver uses the normalised-Black, log-domain formulation of "Let's Be Rational" with a simpler iteration (several evaluations, not two) and is not that algorithm.
-* Monte Carlo `std_error` is sampling error only. Plain Monte Carlo is unreliable for deep out-of-the-money payoffs. Longstaff-Schwartz is a Bermudan, low-biased estimate; policy error is not measured. Random streams are not provably disjoint (hash-seeded, no jump-ahead), and the generator is tested statistically, not against reference vectors.
+* Monte Carlo `std_error` is sampling error only. Plain Monte Carlo is unreliable for deep out-of-the-money payoffs. Longstaff-Schwartz prices a Bermudan option with a learned policy: in expectation its price does not exceed the Bermudan value, `std_error` is conditional on the trained policy, and policy, discretisation and model error are not included. Random streams have distinct hash-derived initial states but are not proved non-overlapping (no jump-ahead). The generator reproduces the published `xoshiro256++` reference vector; the normal/uniform checks are statistical.
 * Surface arbitrage reports cover only the stated scope; a clean report is never a global guarantee. No SSVI. SVI fits do not enforce the butterfly condition.
 * Datasets are closed-form European Black-Scholes labels: no smile, no noise, no American or exotic labels. The invariant report is a self-consistency check, not an independent validation.
-* Bitwise cross-platform reproducibility covers `mc`, `dist`, `bsm`, `greeks` and `dataset` (pure `libm`); it has been checked on one OS only. The tree, solver, risk and surface modules can differ in the last place across platforms.
+* Reproducibility: `mc`, `dist`, `bsm`, `black`, `greeks` and `dataset` are written to avoid platform dependence (pure `libm`), and identical bits were observed on one target (`x86_64-pc-windows-msvc`) with Rust 1.97.1 and 1.74.1 and `libm` 0.2.16. Other targets and later dependency versions are not checked; the CI that would check Linux and macOS has not run. The tree, solver bounds, risk and surface modules can differ in the last place across platforms.
 * Python: GIL-released batch functions share a global Rayon pool; single-thread throughput of the accurate pricer is about half that of a NumPy/SciPy implementation on wide-ranging inputs; with all threads it is about 2.6x faster ([docs/BENCHMARKS.md](docs/BENCHMARKS.md)). Accuracy, not speed, is the design priority of the pricer and the implied-volatility solver.
 
 ## Roadmap

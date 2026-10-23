@@ -140,21 +140,56 @@ fn analytic_greeks_match_high_order_finite_differences() {
     }
 }
 
-/// With r = 0 an American put is worth the same as the European put (there
-/// is no benefit to exercising early), and with q = 0 an American call equals
-/// the European call. Both are exact properties of the discrete tree too.
+/// Sufficient conditions for "no early-exercise value", which hold on the
+/// tree exactly:
+///
+/// * American call = European call when `q <= 0` and `r >= 0`;
+/// * American put = European put when `r <= 0` and `q >= 0`.
+///
+/// (Neither `q = 0` alone nor `r = 0` alone is enough once negative rates or
+/// negative dividend yields are allowed; the next test gives counterexamples.)
 #[test]
-fn american_equals_european_where_early_exercise_has_no_value() {
+fn american_equals_european_under_the_sufficient_conditions() {
     for steps in [1usize, 7, 64, 300] {
-        let put = opt(100.0, 110.0, 0.0, 0.0, 0.3, 1.0);
-        let am = binomial::price(&put, OptionType::Put, ExerciseStyle::American, steps).unwrap();
-        let eu = binomial::price(&put, OptionType::Put, ExerciseStyle::European, steps).unwrap();
-        assert!((am - eu).abs() < 1e-12, "r=0 put, steps {steps}");
-        let call = opt(100.0, 90.0, 0.05, 0.0, 0.3, 1.0);
-        let am = binomial::price(&call, OptionType::Call, ExerciseStyle::American, steps).unwrap();
-        let eu = binomial::price(&call, OptionType::Call, ExerciseStyle::European, steps).unwrap();
-        assert!((am - eu).abs() < 1e-12, "q=0 call, steps {steps}");
+        for &(r, q) in &[(0.0, 0.0), (0.05, 0.0), (0.05, -0.03)] {
+            let call = opt(100.0, 90.0, r, q, 0.3, 1.0);
+            let am =
+                binomial::price(&call, OptionType::Call, ExerciseStyle::American, steps).unwrap();
+            let eu =
+                binomial::price(&call, OptionType::Call, ExerciseStyle::European, steps).unwrap();
+            assert!((am - eu).abs() < 1e-12, "call r={r} q={q} steps {steps}");
+        }
+        for &(r, q) in &[(0.0, 0.0), (-0.05, 0.0), (-0.05, 0.03)] {
+            let put = opt(100.0, 110.0, r, q, 0.3, 1.0);
+            let am =
+                binomial::price(&put, OptionType::Put, ExerciseStyle::American, steps).unwrap();
+            let eu =
+                binomial::price(&put, OptionType::Put, ExerciseStyle::European, steps).unwrap();
+            assert!((am - eu).abs() < 1e-12, "put r={r} q={q} steps {steps}");
+        }
     }
+}
+
+/// Counterexamples to the weaker statements: with a negative rate, an American
+/// call on a stock paying *no* dividend can be worth more than the European
+/// call; with a negative dividend yield, an American put at a *zero* rate can be
+/// worth more than the European put (the call-put symmetry swaps `r` and `q`).
+#[test]
+fn early_exercise_has_value_when_the_sufficient_conditions_fail() {
+    let call = opt(100.0, 60.0, -0.08, 0.0, 0.2, 2.0);
+    let am = binomial::price(&call, OptionType::Call, ExerciseStyle::American, 400).unwrap();
+    let eu = binomial::price(&call, OptionType::Call, ExerciseStyle::European, 400).unwrap();
+    assert!(
+        am > eu + 1e-3,
+        "negative-rate call: American {am} vs European {eu}"
+    );
+    let put = opt(100.0, 160.0, 0.0, -0.08, 0.2, 2.0);
+    let am = binomial::price(&put, OptionType::Put, ExerciseStyle::American, 400).unwrap();
+    let eu = binomial::price(&put, OptionType::Put, ExerciseStyle::European, 400).unwrap();
+    assert!(
+        am > eu + 1e-3,
+        "negative-yield put: American {am} vs European {eu}"
+    );
 }
 
 /// McKean's perpetual American put (q = 0): with gamma = 2r / sigma^2 and

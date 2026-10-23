@@ -67,8 +67,8 @@ def test_binomial_and_mc_agree_with_bs():
 def test_mc_golden_value_is_stable_across_python_and_rust():
     # Same configuration as the Rust regression-lock test (seed 42, 50k paths, antithetic).
     price, se = qk.mc_european(100, 100, 0.05, 0.2, 1.0, paths=50_000, seed=42, antithetic=True)
-    assert np.float64(price).view(np.uint64) == 4622057817873776027
-    assert np.float64(se).view(np.uint64) == 4586848783294312776
+    assert np.float64(price).view(np.uint64) == 4622057817873776051
+    assert np.float64(se).view(np.uint64) == 4586848783294312790
 
 
 def test_mc_american_detailed_separates_training_and_evaluation():

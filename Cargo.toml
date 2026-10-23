@@ -9,7 +9,7 @@ license = "MIT OR Apache-2.0"
 readme = "README.md"
 keywords = ["options", "black-scholes", "greeks", "var", "quant"]
 categories = ["finance", "mathematics"]
-exclude = [".github/", "python/", "benchmarks/"]
+exclude = [".github/", "python/", "benchmarks/", "Cargo.lock"]
 
 [package.metadata.docs.rs]
 all-features = true

@@ -44,12 +44,16 @@ code, results identical (checked by the test-suite, not by the benchmark).
 | `batch::greeks`, 100k | 4.92 ms (20.3 M/s) | 1.24 ms (80.6 M/s) |
 | `detailed::price`, 100k | 13.2 ms (7.6 M/s) | 1.43 ms (69.9 M/s) |
 | `detailed::implied_vol`, 20k | 51.7 ms (0.39 M/s) | 3.49 ms (5.7 M/s) |
-| `mc::european`, 1M paths | 9.4 ms (106 M paths/s) | 0.766 ms (1.31 G paths/s) |
-| `mc::american_lsm`, 20k train + 20k eval, 50 steps | 34.4 ms | 31.9 ms |
+| `mc::european`, 1M paths | 12.3 ms (81 M paths/s) | 0.776 ms (1.29 G paths/s) |
+| `mc::american_lsm`, 20k train + 20k eval, 50 steps | 37.3 ms | 32.1 ms |
 | `dataset::generate`, 100k rows | 101 ms | 101 ms (not parallelised) |
 
 For reference, the previous formulas on the same benchmark inputs ran
 `batch::price` at 2.65 ms serial and `detailed::implied_vol` (20k) at 10.8 ms.
+
+The Monte Carlo rows were re-measured after the overflow-safe rewrite (the
+European estimator is about 30% slower serially than before it, 9.4 ms for 1M
+paths; the other rows are from the earlier session).
 
 Also in `benches/pricing.rs` (serial): binomial American put 5.7 us / 112 us /
 430 us at 100 / 500 / 1000 steps.

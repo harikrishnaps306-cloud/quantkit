@@ -9,7 +9,9 @@
 //! * Across strikes, total variance `w = sigma^2 T` is interpolated linearly
 //!   in `k`; outside the quoted strikes the edge volatility is held flat.
 //! * Across expiries, `w` is interpolated linearly in `T` at fixed `k`
-//!   (which keeps calendar spreads arbitrage-free whenever the slices are);
+//!   (at each fixed `k` this keeps total variance non-decreasing in `T`
+//!   between two slices whose interpolated values at that `k` are ordered;
+//!   it does not make the surface arbitrage-free);
 //!   before the first and after the last expiry the volatility is held flat.
 //!
 //! These are simple, predictable rules rather than a calibrated model. Use

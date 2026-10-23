@@ -44,8 +44,12 @@ jobs:
         run: cargo test --all-targets --all-features
       - name: doctests (all features)
         run: cargo test --doc --all-features
-      - name: single-threaded rayon gives identical Monte Carlo and dataset results
-        run: RAYON_NUM_THREADS=1 cargo test --lib --features parallel -- european_bitwise checksum_regression
+      - name: golden vectors (PRNG reference vectors, Monte Carlo and dataset locks), serial
+        run: cargo test --lib -- xoshiro256pp splitmix64 unit_interval european_bitwise checksum_regression
+      - name: golden vectors with the parallel feature at 1 and 7 threads
+        run: |
+          RAYON_NUM_THREADS=1 cargo test --lib --features parallel -- european_bitwise checksum_regression
+          RAYON_NUM_THREADS=7 cargo test --lib --features parallel -- european_bitwise checksum_regression
       - name: doc
         run: cargo doc --no-deps --all-features
         env:

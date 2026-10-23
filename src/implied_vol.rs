@@ -232,8 +232,10 @@ pub fn solve_detailed(
     // Work with the out-of-the-money part of the price (time value), in the
     // normalised variables of `crate::black`: x = ln(F/K), s = sigma sqrt(T),
     // and solve  ln b(-|x|, s) = ln(time value / scale)  for s. Because the
-    // equation is in logarithms, a price of 1e-300 is as well conditioned as a
-    // price of 1, and b never underflows.
+    // equation is in logarithms, the iteration is scale-free and b never
+    // underflows. (How much a tiny price says about the volatility is a matter of
+    // conditioning, the elasticity reported in `IvSolution`, not of this change of
+    // variables.)
     let x = libm::log(contract.spot() / contract.strike())
         + (contract.rate() - contract.dividend_yield()) * t;
     let scale = disc_spot.sqrt() * disc_strike.sqrt();
@@ -453,5 +455,64 @@ mod tests {
         };
         let r = solve_with(&c, OptionType::Call, 10.123_456, cfg);
         assert!(matches!(r, Err(QuantError::NoConvergence { .. })));
+    }
+
+    /// A price a few ulps above intrinsic value carries no volatility
+    /// information: the time value is below the resolution of the input.
+    #[test]
+    fn in_the_money_time_value_below_price_resolution_is_rejected() {
+        let c = contract(100.0, 50.0, 0.0, 0.0, 1.0);
+        let intrinsic: f64 = 50.0;
+        let just_above = f64::from_bits(intrinsic.to_bits() + 3);
+        assert!(just_above > intrinsic);
+        assert!(matches!(
+            solve(&c, OptionType::Call, just_above),
+            Err(QuantError::PriceOutOfBounds { .. })
+        ));
+        // With a visible time value the solve works but is badly conditioned,
+        // which the elasticity reports.
+        let p = bsm::price(&c.with_volatility(0.05).unwrap(), OptionType::Call);
+        let sol = solve_detailed(&c, OptionType::Call, p, SolverConfig::default());
+        if let Ok(sol) = sol {
+            assert!(sol.elasticity < 1e-3, "elasticity {}", sol.elasticity);
+        }
+    }
+
+    /// A call worth the spot to many digits has almost no volatility
+    /// information: the solve succeeds (it reprices within tolerance) but the
+    /// elasticity says the volatility is poorly determined.
+    #[test]
+    fn prices_saturated_near_the_upper_bound_report_tiny_elasticity() {
+        let c = contract(100.0, 100.0, 0.0, 0.0, 1.0);
+        let p = bsm::price(&c.with_volatility(14.0).unwrap(), OptionType::Call);
+        let sol = solve_detailed(&c, OptionType::Call, p, SolverConfig::default()).unwrap();
+        let back = bsm::price(&c.with_volatility(sol.vol).unwrap(), OptionType::Call);
+        assert!((back - p).abs() <= 2e-12 * p);
+        assert!(sol.elasticity < 1e-6, "elasticity {}", sol.elasticity);
+    }
+
+    /// Subnormal prices: a few significant digits only, so the relative
+    /// tolerance is replaced by an absolute floor, but the solve is well
+    /// defined because the elasticity is huge in the far tail.
+    #[test]
+    fn subnormal_prices_solve_with_a_meaningful_residual() {
+        // d1 = -38 puts the call price near 1.5e-317, below the smallest normal f64.
+        let c = contract(
+            100.0,
+            100.0 * (0.02_f64 * (38.0 + 0.01)).exp(),
+            0.0,
+            0.0,
+            0.01,
+        );
+        let vol = 0.2;
+        let p = bsm::price(&c.with_volatility(vol).unwrap(), OptionType::Call);
+        assert!(
+            p > 0.0 && p < f64::MIN_POSITIVE,
+            "price {p:e} should be subnormal"
+        );
+        let sol = solve_detailed(&c, OptionType::Call, p, SolverConfig::default()).unwrap();
+        assert!((sol.vol - vol).abs() / vol < 1e-8, "vol {}", sol.vol);
+        assert!(sol.elasticity > 100.0);
+        assert!(sol.residual <= 8.0 * f64::from_bits(1) + 1e-6 * p);
     }
 }

@@ -18,8 +18,15 @@
 //!   relations. It catches corrupt or out-of-domain rows; it is not an
 //!   independent validation of the pricing formula, which is tested
 //!   separately against reference values.
-//! * Datasets are bitwise reproducible from `(spec, quantkit version)`: the
-//!   sampler uses the crate's platform-independent [`crate::mc::Rng`].
+//! * The `checksum` detects that the bytes of a dataset changed. It is a
+//!   **regression/provenance check, not a statement that the labels are
+//!   right**, and, like the invariant report, it is not an independent financial
+//!   validation.
+//! * Datasets are intended to be reproducible from `(spec, quantkit version)`,
+//!   for a fixed compiler and `libm` version: the sampler uses the crate's
+//!   [`crate::mc::Rng`] and the labels use pure-Rust `libm`. Bitwise equality
+//!   was checked on one target only (see `docs/NUMERICS.md`, section 8); a new
+//!   `libm` or compiler could in principle change low-order bits.
 //!
 //! # Conventions
 //!
