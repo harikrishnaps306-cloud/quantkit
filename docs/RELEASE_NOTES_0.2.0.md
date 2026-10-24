@@ -1,7 +1,7 @@
 # quantkit 0.2.0: initial experimental release (PyPI `quantkit-rs`; not yet on crates.io)
 
-This is a draft of the notes that would accompany a first public release. Nothing
-has been published, tagged, or pushed.
+First public release, experimental. Published to PyPI as `quantkit-rs` 0.2.0 on
+2026-10-24; not published to crates.io. Tag `v0.2.0` is commit `df7d034`.
 
 ## What this is
 
