@@ -7,9 +7,11 @@ name: Release
 # artifacts and uploads them as a downloadable workflow artifact; nothing leaves
 # GitHub. With `publish` true it additionally uploads to PyPI using trusted
 # publishing (OpenID Connect, no API token stored anywhere), but only from
-# `master`, only if `confirm_version` equals the crate version, and only after
-# the `pypi` environment's protection rules (configure required reviewers there)
-# are satisfied.
+# `master`, only if `confirm_version` equals the crate version, only if the `pypi`
+# environment is verifiably protected (required reviewer, no administrator
+# bypass, deployments limited to master; checked by
+# .github/scripts/check_environment.py before the upload job can start), and
+# only after that reviewer approves the deployment.
 #
 # It does not publish to crates.io and does not create tags or GitHub releases;
 # see docs/RELEASING.md for those steps.
@@ -68,6 +70,11 @@ jobs:
         run: |
           if [ "$GITHUB_REF" != "refs/heads/master" ]; then echo "publishing is only allowed from master (this run: $GITHUB_REF)"; exit 1; fi
           if [ "$CONFIRM" != "$VERSION" ]; then echo "confirm_version '$CONFIRM' does not equal the crate version '$VERSION'"; exit 1; fi
+      - name: the pypi environment exists and is protected (reviewers, no admin bypass, master only)
+        if: ${{ inputs.publish }}
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python3 .github/scripts/check_environment.py "$GITHUB_REPOSITORY" pypi --branch master
 
   wheels:
     name: wheel (${{ matrix.name }})

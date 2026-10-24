@@ -18,7 +18,13 @@ the publisher. Read this page before the first release.
    `pypi` **before the first publish run** and add **required reviewers**
    (yourself). That approval is the last gate before an upload. If the
    environment does not exist, GitHub creates it on first use *without* any
-   protection, and the upload would then proceed with no approval step.
+   protection, and the upload would then proceed with no approval step. The
+   release workflow therefore **fails before the upload** unless the environment
+   exists with a required reviewer, administrator bypass off, and deployments
+   limited to `master` (`.github/scripts/check_environment.py`). Currently
+   configured: reviewer `harikrishnaps306-cloud`, self-review allowed (you are the
+   only maintainer; turn "Prevent self-review" on only if a second maintainer
+   exists), administrator bypass off, branch rule `master`.
 
 **crates.io**
 
