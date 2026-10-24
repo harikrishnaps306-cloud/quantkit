@@ -113,6 +113,35 @@ Platform tags of the artifacts, as printed by the inspection step:
 So the Linux wheel needs glibc 2.17 or newer, and the macOS wheel runs on Apple
 silicon with macOS 11 or newer; Intel Macs, Linux ARM and musl get no wheel.
 
+## Installed from PyPI (published `quantkit-rs` 0.2.0, GitHub-hosted runners)
+
+Workflow `verify-pypi.yml`, run 40132786601 on `d1c459a`
+(https://github.com/harikrishnaps306-cloud/quantkit/actions/runs/40132786601), all
+six rows passed. Each row installed `quantkit-rs==0.2.0` from PyPI with
+`--only-binary=:all:` into a clean virtualenv (so each platform's published wheel
+was the one used, never a source build), checked that the import came from
+`site-packages` and that the licence notices were installed, ran the pricing and
+implied-volatility smoke test from an empty directory, and ran the `v0.2.0` tag's
+test-suite (23 tests) against the installed package.
+
+| platform | CPython | NumPy requested | result |
+|---|---|---|---|
+| Linux x86-64 (ubuntu-24.04) | 3.9 | 1.22.0 | pass |
+| Linux x86-64 (ubuntu-24.04) | 3.13 | newest | pass |
+| macOS arm64 (macos-latest) | 3.11 | 1.26.4 | pass |
+| macOS arm64 (macos-latest) | 3.13 | newest | pass |
+| Windows x86-64 (windows-latest) | 3.9 | 1.22.0 | pass |
+| Windows x86-64 (windows-latest) | 3.13 | newest | pass |
+
+"Newest" resolved to NumPy 2.5.4 in the logs that were read (the Ubuntu 3.13 row
+of the first, partly failed run); the final run's resolved versions were not
+inspected row by row. Python patch versions were whatever `setup-python` supplied.
+A first run (40132557434, `5d3ac4b`) failed on the Ubuntu rows and macOS 3.11
+because of a broken pipe in the workflow's own `pip show | head` line; the package
+had installed correctly and the later steps had not run, so that run is not
+counted. Not covered: other interpreters, other NumPy releases, Intel macOS, Linux
+ARM, musl, and any machine that is not a fresh GitHub-hosted runner.
+
 ## Not tested
 
 * Linux and macOS (any interpreter), ARM, musl; the wheels built there.

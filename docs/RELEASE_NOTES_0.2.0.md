@@ -59,7 +59,7 @@ Details and exact versions: `docs/release-readiness.md`.
 
 ## Known limitations
 
-* CI has run once to green (`9a28f6e`); only the combinations in `docs/compatibility.md` are covered, and no Linux/macOS wheel has been installed outside CI.
+* CI has run once to green (`9a28f6e`); only the combinations in `docs/compatibility.md` are covered, and the published wheels were installed from PyPI on GitHub-hosted Linux, macOS and Windows runners only (six rows in `docs/compatibility.md`), not on other machines.
 * Bitwise reproducibility of Monte Carlo and dataset outputs was observed on one
   target only; the design (pure `libm`, fixed evaluation order) is not a proof.
 * The solver is not Jaeckel's "Let's Be Rational" and needs several evaluations.
