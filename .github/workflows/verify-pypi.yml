@@ -1,0 +1,83 @@
+name: Verify PyPI install
+
+# MANUAL ONLY, read-only, no secrets. Installs the *published* quantkit-rs from
+# PyPI (wheels only, so a missing wheel for a platform fails instead of silently
+# compiling the sdist) into clean virtualenvs on Linux, macOS and Windows, then
+# runs the test-suite of the matching git tag against that installed package.
+#
+# Run it from the Actions tab after a release. It publishes nothing and changes
+# nothing. A pass says that this version installs and passes its tests on the
+# listed OS / Python / NumPy rows; it says nothing about other rows.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Published version to verify (the matching tag v<version> supplies the tests)"
+        type: string
+        default: "0.2.0"
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: ${{ matrix.os }} / Python ${{ matrix.python }} / ${{ matrix.numpy }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-24.04, python: "3.9", numpy: "numpy==1.22.0" }
+          - { os: ubuntu-24.04, python: "3.13", numpy: "numpy" }
+          - { os: macos-latest, python: "3.11", numpy: "numpy==1.26.4" }
+          - { os: macos-latest, python: "3.13", numpy: "numpy" }
+          - { os: windows-latest, python: "3.9", numpy: "numpy==1.22.0" }
+          - { os: windows-latest, python: "3.13", numpy: "numpy" }
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: v${{ inputs.version }}
+          path: tagged
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: install from PyPI into a clean virtualenv (wheels only)
+        env:
+          VERSION: ${{ inputs.version }}
+          NUMPY: ${{ matrix.numpy }}
+        run: |
+          python -m venv venv
+          if [ -d venv/Scripts ]; then PY="$PWD/venv/Scripts/python"; else PY="$PWD/venv/bin/python"; fi
+          "$PY" -m pip install --quiet --upgrade pip
+          "$PY" -m pip install --only-binary=:all: --no-cache-dir "quantkit-rs==$VERSION" "$NUMPY" pytest
+          "$PY" -m pip show -f quantkit-rs | head -20
+      - name: import from site-packages and smoke test
+        run: |
+          if [ -d venv/Scripts ]; then PY="$PWD/venv/Scripts/python"; else PY="$PWD/venv/bin/python"; fi
+          mkdir empty && cd empty
+          "$PY" -c "
+          import sys, numpy, quantkit, importlib.metadata as m
+          d = m.distribution('quantkit-rs')
+          print(sys.version.split()[0], 'numpy', numpy.__version__, 'quantkit-rs', d.version)
+          assert 'site-packages' in quantkit.__file__.replace(chr(92), '/'), quantkit.__file__
+          assert d.version == '${{ inputs.version }}'
+          names = [str(f) for f in d.files]
+          assert any(n.endswith('THIRD_PARTY_NOTICES.txt') for n in names), 'notices missing'
+          p = quantkit.bs_price(42, 40, 0.10, 0.20, 0.5)
+          print('bs_price =', p)
+          assert abs(p - 4.759422392871531) < 1e-12, p
+          b = quantkit.bs_price_batch(numpy.array([80.0, 100.0, 120.0]), 100.0, 0.03, 0.2, 1.0)
+          iv = quantkit.implied_vol_detailed(b, numpy.array([80.0, 100.0, 120.0]), 100.0, 0.03, 1.0)
+          assert abs(iv['vol'] - 0.2).max() < 1e-9 and (iv['status'] == 0).all(), iv
+          print('implied-vol round trip ok')
+          "
+      - name: run the tagged test-suite against the installed package
+        run: |
+          if [ -d venv/Scripts ]; then PY="$PWD/venv/Scripts/python"; else PY="$PWD/venv/bin/python"; fi
+          mkdir suite && cp tagged/python/tests/*.py suite/
+          cd suite
+          "$PY" -m pytest -q -p no:cacheprovider
