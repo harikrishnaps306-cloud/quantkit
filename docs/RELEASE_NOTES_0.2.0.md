@@ -1,4 +1,4 @@
-# quantkit 0.2.0: initial experimental release (draft, not published)
+# quantkit 0.2.0: initial experimental release (PyPI `quantkit-rs`; not yet on crates.io)
 
 This is a draft of the notes that would accompany a first public release. Nothing
 has been published, tagged, or pushed.
@@ -67,14 +67,17 @@ Details and exact versions: `docs/release-readiness.md`.
   against the book and are not used as references.
 * No SSVI, no exotics, no stochastic-volatility models, no live data.
 
-## How to try it (nothing is published)
+## How to try it
 
 ```bash
 # Rust: from a checkout
 cargo add --path path/to/quantkit          # or a path dependency in Cargo.toml
 cargo run --example price_with_greeks
 
-# Python: build and install a wheel from a checkout
+# Python: from PyPI (Linux x86-64, macOS arm64, Windows x86-64 wheels; others build the sdist)
+pip install quantkit-rs
+
+# Python: or build and install a wheel from a checkout
 cd python && pip install maturin numpy && maturin develop --release
 ```
 

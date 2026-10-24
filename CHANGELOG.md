@@ -21,9 +21,9 @@ Validation of these changes is recorded in `docs/audit-fixes.md`. Earlier compat
 
 ## [0.2.0]
 
-Initial experimental release candidate (not published). The `0.x` API may change between minor versions.
+Initial experimental release, published to PyPI as `quantkit-rs` 0.2.0 on 2026-10-24 (not yet on crates.io). The `0.x` API may change between minor versions (see `docs/VERSIONING.md`).
 
-Unreleased locally; nothing here has been published, so the "Changed" items are
+This is the first published version, so the "Changed" items are
 differences from the earlier 0.2.0 development snapshot (commit `02a6393`), listed
 so that code written against it can be migrated.
 
@@ -36,7 +36,7 @@ so that code written against it can be migrated.
 - CI now triggers on pushes to `main` or `master`, on pull requests and manually (`workflow_dispatch`); jobs for Rust on three operating systems, the Rust 1.74 check (library, tests, benches, examples, doctests), a Python 3.9/3.11/3.13 x NumPy matrix that tests the installed wheel, an sdist build-and-test job, and a version-consistency check. First green run on GitHub: commit `9a28f6e` (all 13 jobs on Linux, macOS and Windows).
 - Compatibility evidence recorded in `docs/release-readiness.md`: the wheel on CPython 3.9-3.13 with NumPy 1.21.6-2.5.4 (Windows), Rust 1.74.1 for all targets, and an sdist install.
 - The source distribution no longer contains build outputs, and both the wheel and the sdist carry the licence files (`python/LICENSE-*.txt` are copies of the root licences).
-- `docs/RELEASE_NOTES_0.2.0.md` (draft, unpublished) and `docs/release-readiness.md`.
+- `docs/RELEASE_NOTES_0.2.0.md` and `docs/release-readiness.md`.
 
 ### Added
 - `black` module: the normalised Black function evaluated stably far out of the money (`normalised_otm`, `ln_normalised_otm`, `ln_normalised_vega`).
