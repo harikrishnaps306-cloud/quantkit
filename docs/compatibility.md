@@ -18,29 +18,35 @@ the declaration claimed more than the evidence supported and was raised to
 are untested. The NumPy C API is loaded at run time by the `numpy` crate, which
 documents `>= 1.16` as recommended but that statement is not a test of quantkit.
 
-## Executed: wheel in a clean virtualenv, 20 tests each (Windows 11 x86-64)
+## Executed: wheel in a clean virtualenv, 23 tests each (Windows 11 x86-64)
 
 One wheel, `quantkit-0.2.0-cp39-abi3-win_amd64.whl`, built with
-`maturin 1.15.0`, installed into a fresh virtualenv for each row; the test
-directory was copied out of the checkout and `quantkit.__file__` was asserted to
-be inside `site-packages`.
+`maturin 1.15.0` from a fresh clone of commit `2b5e59a`, installed into a fresh
+`uv venv` for each row (`include-system-site-packages = false`, checked in each
+`pyvenv.cfg`); the test directory was copied out of the checkout and
+`quantkit.__file__` was asserted to be inside `site-packages`. Rows 1, 4 and 5
+first failed to import NumPy itself ("DLL load failed ... filename or extension
+is too long") because the scratch directory path was very long; that is a
+Windows path-length artefact of old NumPy builds, not a quantkit result. They
+were rerun from a short path (`C:/qkmx`) and passed.
 
 | # | CPython | NumPy | result |
 |---|---|---|---|
-| 1 | 3.9.25 | 1.21.6 | 20 passed |
-| 2 | 3.9.25 | 1.26.4 | 20 passed |
-| 3 | 3.9.25 | 2.0.2 | 20 passed |
-| 4 | 3.10.20 | 1.21.6 | 20 passed |
-| 5 | 3.11.9 | 1.23.5 | 20 passed |
-| 6 | 3.11.9 | 1.26.4 | 20 passed |
-| 7 | 3.11.9 | 2.4.6 | 20 passed |
-| 8 | 3.12.13 | 1.26.4 | 20 passed |
-| 9 | 3.12.13 | 2.5.4 | 20 passed |
-| 10 | 3.13.14 | 2.5.4 | 20 passed |
+| 1 | 3.9.25 | 1.21.6 | 23 passed |
+| 2 | 3.9.25 | 1.26.4 | 23 passed |
+| 3 | 3.9.25 | 2.0.2 | 23 passed |
+| 4 | 3.10.20 | 1.21.6 | 23 passed |
+| 5 | 3.11.9 | 1.23.5 | 23 passed |
+| 6 | 3.11.9 | 1.26.4 | 23 passed |
+| 7 | 3.11.9 | 2.4.6 | 23 passed |
+| 8 | 3.12.13 | 1.26.4 | 23 passed |
+| 9 | 3.12.13 | 2.5.4 | 23 passed |
+| 10 | 3.13.14 | 2.5.4 | 23 passed |
 
-Also executed: a wheel built **from the source distribution** installed on
-CPython 3.11.9 with the newest NumPy available for it at the time (the exact
-version was not recorded), 20 passed.
+Also executed: the source distribution built from the same commit (no build
+outputs inside; licence files present) was built and installed by pip into a
+fresh isolated virtualenv on CPython 3.12.13 with NumPy 2.5.4, and the same 23
+tests passed against the installed copy.
 
 ## Configured in CI, not yet executed
 
@@ -71,8 +77,12 @@ plus job `sdist` (ubuntu-latest, CPython 3.12, newest NumPy).
 
 | toolchain | what ran | result |
 |---|---|---|
-| 1.97.1 (Windows) | fmt, clippy, tests (default 158, serde 159, parallel 158, all features 159), 93 doctests, docs, benches, examples, `cargo package` | pass |
-| 1.74.1 (Windows) | check and test, all targets, all features (159 = 123 library + 36 integration), 93 doctests | pass |
+| 1.97.1 (Windows), commit `2b5e59a`, fresh clone | version guard, fmt, clippy `-D warnings` (all targets, all features), tests with all features (171 = 123 library + 48 integration), 93 doctests, golden vectors serial and `parallel` at 1 and 7 threads | pass |
+| 1.74.1 (Windows), same commit | tests with all features under the resolver-fallback lockfile (171), 93 doctests | pass |
+
+Earlier passes ran the default, `serde` and `parallel` feature sets separately,
+docs, benches, examples and `cargo package`; those were not repeated in the
+second pass above.
 
 The Python bindings (pyo3 0.30, numpy crate 0.30) are not covered by the
 Rust 1.74 claim, which concerns the library crate only.

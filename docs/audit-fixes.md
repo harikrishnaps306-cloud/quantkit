@@ -1,6 +1,6 @@
 # Quantkit audit fixes — 24 October 2026
 
-Base: b1d4f702c20b503111eb60be781813e4d5baea0e. Changes are local and uncommitted. No remote, tag, or publication was created.
+Base: b1d4f702c20b503111eb60be781813e4d5baea0e. The changes were committed locally as 2b5e59a. No remote, tag, or publication was created.
 
 ## Correctness fixes
 

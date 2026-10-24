@@ -193,7 +193,7 @@ Linux and macOS runners. Parsing the YAML proves none of this.
 3. **Reproducibility is unverified off one target.** The golden vectors have only been compared on Windows x86-64 with two compilers.
 4. **Wheels for other platforms do not exist.** Only a Windows wheel was built; Linux and macOS wheels (and manylinux compliance) need CI or cibuildwheel, and the `numpy>=1.21.6` bound needs confirming there.
 5. **Accuracy is evidence, not proof;** the accurate pricer and solver are slower than a naive implementation (see `docs/BENCHMARKS.md`); several reference figures from a textbook are unconfirmed and unused.
-6. **Maintainer decisions not made:** crate/package name availability on crates.io and PyPI at publish time; the final `0.x` API-stability policy (draft in `docs/RELEASE_NOTES_0.2.0.md`); whether to publish at all.
+6. **Maintainer decisions not made:** crate/package name availability (checked 2026-10-24: `quantkit` is free on crates.io but **already taken on PyPI**, see `docs/release-validation-2026-10-24.md`); the final `0.x` API-stability policy (draft in `docs/RELEASE_NOTES_0.2.0.md`); whether to publish at all.
 
 ## 9. The exact next external action
 
@@ -241,3 +241,42 @@ Fix in this order, one root cause at a time, re-pushing to `master` (or running 
 5. Golden-vector failures on Linux or macOS would be a real finding about cross-platform reproducibility; they would be reported and explained, never silently re-recorded.
 
 Numerical algorithms are not to be changed to make CI pass.
+
+## 10. Second validation pass (2026-10-24, commit `2b5e59a`)
+
+The audit fixes (extreme CRR trees, risk scaling, normal-quantile tails, surface
+coordinates, Greeks error propagation) are committed as `2b5e59a`. Everything
+below ran on Windows 11 x86-64 in a fresh clone of that commit.
+
+| item | result |
+|---|---|
+| fmt, clippy `-D warnings` (all targets and features), version guard | pass |
+| Rust 1.97.1, all features: 171 tests, 93 doctests | pass |
+| golden vectors: serial, and `parallel` at 1 and 7 threads | pass; no lock re-recorded |
+| Rust 1.74.1, resolver-fallback lockfile, all features: 171 tests, 93 doctests | pass |
+| wheel built from the commit, 10 isolated CPython/NumPy pairs, 23 tests each | pass (see `docs/compatibility.md`, including an environment artefact on 3 rows that was rerun) |
+| sdist built from the commit, installed by pip in an isolated venv, 23 tests | pass (CPython 3.12.13, NumPy 2.5.4) |
+| `cargo audit` on both Rust graphs | no advisories; see `docs/dependency-review.md` |
+| `pip-audit` on NumPy | **PYSEC-2021-855 applies to the declared floor 1.21.6**; judged unreachable from quantkit but not tested; floor not changed |
+| licence expressions | all permissive or dual-licensed with a permissive option; a third-party notices file for the statically linked dependencies in the wheel does not exist yet |
+| package names | **`quantkit` is already taken on PyPI** (project `quantkit` by another author, version 0.0.1rc1). It is free on crates.io. |
+
+### New blocker: the PyPI name
+
+The Python distribution is named `quantkit` in `python/pyproject.toml`. That
+name belongs to someone else on PyPI, so it cannot be published as is. The crate
+name `quantkit` was free on crates.io when checked (an availability check is not
+a reservation; it can change before publishing). A rename of the **distribution**
+only (the import name can stay `quantkit`) is a metadata change, but it is a
+naming decision, so none was made. Names that returned 404 on both registries at
+check time: `quantkit-rs`, `quantkit-py`, `quantkit-options`, `qk-options`,
+`optkit-rs`. (`pyquantkit` exists on PyPI.) Importing `quantkit` in a
+Python environment that also has the other author's `quantkit` installed would
+collide, which is an argument for a different import name too.
+
+### Still not done
+
+* GitHub CI has not run: no repository was provided. `gh` is not installed,
+  there is no WSL or Docker on this machine, so Linux and macOS cannot be
+  exercised locally either. No wheel for Linux or macOS exists.
+* Benchmarks: see the date and conditions at the top of `docs/BENCHMARKS.md`.

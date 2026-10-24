@@ -102,6 +102,31 @@ How to read this fairly:
   or any implied-volatility competitor. Their speed claims are theirs; none
   were reproduced here.
 
+## Refresh of 24 October 2026 (commit `2b5e59a` plus new benches)
+
+Same machine and toolchain as above, criterion, serial unless noted, one run each, laptop not tuned; differences under about 10% are within noise. The tables above are from earlier code and were not re-measured except where listed here.
+
+| benchmark | median |
+|---|---|
+| `bsm::price` | 40.8 ns (earlier table: 32.4 ns) |
+| `implied_vol::solve` | 1.05 us (earlier: 883 ns) |
+| binomial American put, 100 / 500 / 1000 steps | 6.9 / 128.6 / 483 us |
+| **extreme log-domain tree** (S=K=100, sigma=100, T=1), European 100 / 500 / 1000 steps | 48.5 us / 1.33 ms / 4.72 ms |
+| same, American 100 / 500 / 1000 steps | 136 us / 3.28 ms / 12.1 ms |
+| risk, 1M returns: historical VaR / CVaR | 4.47 / 4.62 ms |
+| parametric VaR / Sharpe / Sortino | 10.7 / 14.2 / 8.5 ms |
+| max drawdown / annualized volatility | 3.85 / 11.1 ms |
+| `norm_inv_cdf` p=0.3 / 1e-6 / 1e-300 | 30 / 51 / 632 ns |
+| `batch::price`, 100k: serial / parallel | 10.6 ms / 1.62 ms |
+| `batch::greeks`, 100k: serial / parallel | 5.07 / 1.91 ms |
+| `detailed::price`, 100k: serial / parallel | 13.8 / 2.99 ms |
+| `detailed::implied_vol`, 20k: serial / parallel | 56.4 / 7.78 ms |
+| `mc::european`, 1M: serial / parallel | 13.2 / 1.60 ms |
+| `mc::american_lsm` serial | 39.4 ms |
+| `dataset::generate`, 100k | 104.6 ms |
+
+The extreme American tree costs about 20x to 25x the ordinary American put at equal step count (136 vs 6.9 us, 3.28 ms vs 129 us, 12.1 ms vs 483 us; the cost is `ln`/`exp` per node), and only trees with `volatility * sqrt(T * steps) > 600` take it. Sharpe and Sortino now copy and rescale the input; I did not profile how much of their time that accounts for. The parallel runs are noisier than those in the earlier table (for example `batch::price` parallel was 0.75 ms then, 1.62 ms now); the parallel figures should not be compared across the two tables. The Python benchmark was not re-run.
+
 ## Reproducing
 
 ```bash
