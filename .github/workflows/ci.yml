@@ -1,9 +1,9 @@
 name: CI
 
-# STATUS: configured but NOT yet executed on GitHub. The commands below were run
-# locally on Windows (see docs/release-readiness.md for exactly which); nothing
-# here has been observed passing on Linux or macOS, and a YAML file that parses
-# is not evidence that a job works.
+# STATUS: first green run is commit 9a28f6e (all 13 jobs; the run on the previous
+# commit failed only on a runner-image problem, see docs/compatibility.md). One
+# green run on one date is evidence for that commit, not a guarantee: runner
+# images, action versions and dependency releases change.
 #
 # Triggers: a push to `main` or `master`; any pull request; and manual runs from
 # the Actions tab (workflow_dispatch), which is how to validate a branch before

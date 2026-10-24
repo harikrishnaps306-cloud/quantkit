@@ -48,7 +48,9 @@ outputs inside; licence files present) was built and installed by pip into a
 fresh isolated virtualenv on CPython 3.12.13 with NumPy 2.5.4, and the same 23
 tests passed against the installed copy.
 
-## Configured in CI, not yet executed
+## Executed in CI on GitHub (run on commit `9a28f6e`, 13 of 13 jobs passed)
+
+The first run (commit `dcc3b18`) passed 12 of 13; the failure was the Ubuntu CPython 3.9 row, because `ubuntu-latest` is now Ubuntu 26.04 and `setup-python` has no 3.9 for it. That row is pinned to `ubuntu-24.04`. CI logs were not read in full; results are job and step conclusions from the GitHub API.
 
 `.github/workflows/ci.yml`, job `python` (`numpy` with no pin means the newest
 release for that interpreter):
