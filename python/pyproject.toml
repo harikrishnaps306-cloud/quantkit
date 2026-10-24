@@ -8,9 +8,9 @@ description = "Options pricing, Greeks, implied volatility, Monte Carlo, vol sur
 readme = "README.md"
 requires-python = ">=3.9"
 license = "MIT OR Apache-2.0"
-license-files = ["LICENSE-MIT.txt", "LICENSE-APACHE.txt"]
+license-files = ["LICENSE-MIT.txt", "LICENSE-APACHE.txt", "THIRD_PARTY_NOTICES.txt"]
 authors = [{ name = "Harikrishna Paykatt Valliaparambil" }]
-dependencies = ["numpy>=1.21.6"]
+dependencies = ["numpy>=1.22.0"]
 classifiers = [
     "Programming Language :: Rust",
     "Topic :: Office/Business :: Financial",

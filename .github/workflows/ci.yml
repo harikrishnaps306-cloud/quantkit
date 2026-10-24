@@ -31,6 +31,11 @@ jobs:
       - uses: actions/checkout@v4
       - name: Rust crate, Python crate and CHANGELOG agree on the version
         run: python3 .github/scripts/check_versions.py
+      - uses: dtolnay/rust-toolchain@stable
+      - name: third-party notices for the wheel are up to date
+        run: |
+          cargo fetch --manifest-path python/Cargo.toml --locked
+          python3 .github/scripts/gen_notices.py --check
 
   rust:
     name: rust (${{ matrix.os }})
@@ -123,10 +128,10 @@ jobs:
       matrix:
         include:
           # Pinned: ubuntu-latest is Ubuntu 26.04, for which setup-python has no CPython 3.9.
-          - { os: ubuntu-24.04, python: "3.9", numpy: "numpy==1.21.6" }
+          - { os: ubuntu-24.04, python: "3.9", numpy: "numpy==1.22.0" }
           - { os: ubuntu-latest, python: "3.11", numpy: "numpy==1.26.4" }
           - { os: ubuntu-latest, python: "3.13", numpy: "numpy" }
-          - { os: windows-latest, python: "3.9", numpy: "numpy==1.21.6" }
+          - { os: windows-latest, python: "3.9", numpy: "numpy==1.22.0" }
           - { os: windows-latest, python: "3.13", numpy: "numpy" }
           - { os: macos-latest, python: "3.11", numpy: "numpy==1.26.4" }
           - { os: macos-latest, python: "3.13", numpy: "numpy" }
@@ -150,6 +155,12 @@ jobs:
         run: |
           python -m pip install maturin
           maturin build --release --manifest-path python/Cargo.toml -o dist
+      - name: the wheel carries the licences and third-party notices
+        run: |
+          python -m zipfile -l dist/*.whl > wheel-files.txt
+          grep -q 'LICENSE-MIT.txt' wheel-files.txt
+          grep -q 'LICENSE-APACHE.txt' wheel-files.txt
+          grep -q 'THIRD_PARTY_NOTICES.txt' wheel-files.txt
       - name: install the wheel in a clean virtualenv with the pinned NumPy, and test it
         run: |
           python -m venv .venv-clean
@@ -182,6 +193,7 @@ jobs:
           tar tzf dist-sdist/*.tar.gz > sdist-files.txt
           grep -q 'LICENSE-MIT$' sdist-files.txt
           grep -q 'LICENSE-APACHE$' sdist-files.txt
+          grep -q 'THIRD_PARTY_NOTICES.txt$' sdist-files.txt
           grep -q 'src/mc.rs$' sdist-files.txt
           if grep -E '(^|/)(target|dist|\.venv[^/]*)/|\.whl$|\.pyd$|\.so$' sdist-files.txt; then
             echo "build outputs found in the sdist"; exit 1

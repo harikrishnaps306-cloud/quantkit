@@ -27,12 +27,10 @@ pricing and basic investment risk:
   rely on it for trading, risk limits, or any decision with financial
   consequences. It is provided for education and research, with no warranty.
 * **API stability.** `0.x` semantic versioning: breaking changes may occur in
-  any minor release. The parts most likely to change are the `detailed` row
-  structs, `dataset`, `surface` result types, the `LsmResult` fields, `Bumps`
-  defaults, and the Python function signatures and result-dictionary keys. The
-  core entry points (`OptionParams::builder`, `bsm::price`, `greeks::analytic`,
-  `implied_vol::solve`, `binomial::price`, `mc::european`, `risk::*`) are the
-  least likely to move.
+  any minor release and only there; patch releases fix bugs and add things
+  without breaking documented behaviour. The full policy, including what counts
+  as breaking and which parts are most likely to move, is in
+  `docs/VERSIONING.md`.
 * **Numerical outputs can change between versions.** Regression-locked values
   (the Monte Carlo and dataset golden vectors) were deliberately re-recorded
   during development when the random-number mapping and the pricer changed, and
@@ -53,7 +51,7 @@ pricing and basic investment risk:
 |---|---|
 | Rust 1.97.1 (Windows) | all checks pass |
 | Rust 1.74.1 (declared MSRV, Windows), with a Rust-version-aware lockfile | library, tests, benches, examples and doctests pass |
-| CPython 3.9-3.13 with NumPy 1.21.6 to 2.5.4 (Windows x86-64): ten exact pairs listed in `docs/compatibility.md` | all pass; declared `numpy>=1.21.6` (the oldest tested) |
+| CPython 3.9-3.13 with NumPy 1.22.0 to 2.5.4 (Windows x86-64): exact pairs listed in `docs/compatibility.md` | all pass; declared `numpy>=1.22.0` (the oldest tested; earlier releases carry a known advisory) |
 | Linux (x86-64), macOS (arm64) | CI run on GitHub, all jobs green at commit `9a28f6e`; golden vectors matched. Only what the workflow executes was tested. |
 | ARM Linux, musl | **not tested** |
 

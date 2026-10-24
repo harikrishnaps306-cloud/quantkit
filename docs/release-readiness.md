@@ -257,7 +257,7 @@ below ran on Windows 11 x86-64 in a fresh clone of that commit.
 | wheel built from the commit, 10 isolated CPython/NumPy pairs, 23 tests each | pass (see `docs/compatibility.md`, including an environment artefact on 3 rows that was rerun) |
 | sdist built from the commit, installed by pip in an isolated venv, 23 tests | pass (CPython 3.12.13, NumPy 2.5.4) |
 | `cargo audit` on both Rust graphs | no advisories; see `docs/dependency-review.md` |
-| `pip-audit` on NumPy | **PYSEC-2021-855 applies to the declared floor 1.21.6**; judged unreachable from quantkit but not tested; floor not changed |
+| `pip-audit` on NumPy | flagged the then-declared floor 1.21.6 (GHSA-fpfv-jqm9-f5jm). **Superseded:** the floor is now `numpy>=1.22.0`; see `docs/dependency-review.md` |
 | licence expressions | all permissive or dual-licensed with a permissive option; a third-party notices file for the statically linked dependencies in the wheel does not exist yet |
 | package names | **`quantkit` is already taken on PyPI** (project `quantkit` by another author, version 0.0.1rc1). It is free on crates.io. |
 

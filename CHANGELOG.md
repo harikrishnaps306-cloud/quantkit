@@ -28,8 +28,10 @@ differences from the earlier 0.2.0 development snapshot (commit `02a6393`), list
 so that code written against it can be migrated.
 
 ### Release preparation
+- Added `docs/VERSIONING.md`: the `0.x` policy (breaking changes only in minor releases; what counts as breaking).
+- The Python wheel and sdist now carry `THIRD_PARTY_NOTICES.txt` (licence texts of the 29 statically linked Rust packages), generated and checked in CI by `.github/scripts/gen_notices.py`.
 - The Python distribution is renamed `quantkit-rs` because `quantkit` is taken on PyPI. The import name stays `quantkit`.
-- The wheel's NumPy requirement is now `numpy>=1.21.6` (it was `>=1.21`): 1.21.6 is the oldest release actually tested. The exact tested and configured Python/NumPy combinations are in `docs/compatibility.md`.
+- The wheel's NumPy requirement is `numpy>=1.22.0` (it was `>=1.21`). NumPy before 1.22 is listed as affected by GHSA-fpfv-jqm9-f5jm / CVE-2021-34141; 1.22.0 is the oldest release tested and has no known advisory. The exact tested and configured Python/NumPy combinations are in `docs/compatibility.md`.
 - CI now triggers on pushes to `main` or `master`, on pull requests and manually (`workflow_dispatch`); jobs for Rust on three operating systems, the Rust 1.74 check (library, tests, benches, examples, doctests), a Python 3.9/3.11/3.13 x NumPy matrix that tests the installed wheel, an sdist build-and-test job, and a version-consistency check. First green run on GitHub: commit `9a28f6e` (all 13 jobs on Linux, macOS and Windows).
 - Compatibility evidence recorded in `docs/release-readiness.md`: the wheel on CPython 3.9-3.13 with NumPy 1.21.6-2.5.4 (Windows), Rust 1.74.1 for all targets, and an sdist install.
 - The source distribution no longer contains build outputs, and both the wheel and the sdist carry the licence files (`python/LICENSE-*.txt` are copies of the root licences).

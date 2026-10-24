@@ -9,14 +9,15 @@ Other documents link here instead of restating them.
 |---|---|---|
 | Rust (library and dev-dependencies) | `rust-version = "1.74"` | passes on Rust 1.74.1 with a Rust-version-aware lockfile (see `docs/release-readiness.md`) |
 | Python | `Requires-Python >=3.9` | one abi3 wheel tested on 3.9, 3.10, 3.11, 3.12, 3.13 (table below) |
-| NumPy | `numpy>=1.21.6` | 1.21.6 is the **oldest release actually installed and tested** |
+| NumPy | `numpy>=1.22.0` | 1.22.0 is the **oldest release actually installed and tested**, and the first release without the known advisory GHSA-fpfv-jqm9-f5jm (see `docs/dependency-review.md`) |
 
-**Correction made in this pass.** The wheel previously declared `numpy>=1.21`.
-Only NumPy 1.21.**6** had been tested; releases 1.21.0 to 1.21.5 never were, so
-the declaration claimed more than the evidence supported and was raised to
-`>=1.21.6`. This is not a finding that older 1.21 releases fail; it is that they
-are untested. The NumPy C API is loaded at run time by the `numpy` crate, which
-documents `>= 1.16` as recommended but that statement is not a test of quantkit.
+**History of this bound.** It was `>=1.21` (only 1.21.6 had been tested), then
+`>=1.21.6`, and is now `>=1.22.0` because every NumPy release before 1.22 is
+listed as affected by GHSA-fpfv-jqm9-f5jm / CVE-2021-34141 (a denial-of-service
+class "incorrect comparison" issue in `numpy.core` string handling). Releases
+before 1.22.0 are therefore **unsupported**, not merely untested. The NumPy C API
+is loaded at run time by the `numpy` crate, which documents `>= 1.16` as
+recommended; that statement is not a test of quantkit.
 
 ## Executed: wheel in a clean virtualenv, 23 tests each (Windows 11 x86-64)
 
@@ -32,16 +33,28 @@ were rerun from a short path (`C:/qkmx`) and passed.
 
 | # | CPython | NumPy | result |
 |---|---|---|---|
-| 1 | 3.9.25 | 1.21.6 | 23 passed |
+| 1 | 3.9.25 | 1.21.6 | 23 passed (now **below the floor**; historical, unsupported) |
 | 2 | 3.9.25 | 1.26.4 | 23 passed |
 | 3 | 3.9.25 | 2.0.2 | 23 passed |
-| 4 | 3.10.20 | 1.21.6 | 23 passed |
+| 4 | 3.10.20 | 1.21.6 | 23 passed (now **below the floor**; historical, unsupported) |
 | 5 | 3.11.9 | 1.23.5 | 23 passed |
 | 6 | 3.11.9 | 1.26.4 | 23 passed |
 | 7 | 3.11.9 | 2.4.6 | 23 passed |
 | 8 | 3.12.13 | 1.26.4 | 23 passed |
 | 9 | 3.12.13 | 2.5.4 | 23 passed |
 | 10 | 3.13.14 | 2.5.4 | 23 passed |
+
+Rows 11 to 13 use a wheel rebuilt after the floor change (metadata only; no
+code changed), same method (`uv venv`, isolated, tests copied out of the checkout):
+
+| # | CPython | NumPy | result |
+|---|---|---|---|
+| 11 | 3.9.25 | 1.22.0 | 23 passed |
+| 12 | 3.10.20 | 1.22.0 | 23 passed (2 `DeprecationWarning`s raised inside NumPy's own `distutils` import) |
+| 13 | 3.10.20 | 1.22.4 | 23 passed |
+
+Rows 2, 3 and 5 to 10 were run against the earlier wheel and not repeated for
+the rebuilt one; CI re-runs the oldest, a middle and the newest combinations.
 
 Also executed: the source distribution built from the same commit (no build
 outputs inside; licence files present) was built and installed by pip into a
@@ -57,10 +70,10 @@ release for that interpreter):
 
 | runner | CPython | NumPy |
 |---|---|---|
-| ubuntu-24.04 (pinned; `ubuntu-latest` has no CPython 3.9) | 3.9 | 1.21.6 |
+| ubuntu-24.04 (pinned; `ubuntu-latest` has no CPython 3.9) | 3.9 | 1.22.0 |
 | ubuntu-latest | 3.11 | 1.26.4 |
 | ubuntu-latest | 3.13 | newest |
-| windows-latest | 3.9 | 1.21.6 |
+| windows-latest | 3.9 | 1.22.0 |
 | windows-latest | 3.13 | newest |
 | macos-latest (arm64) | 3.11 | 1.26.4 |
 | macos-latest (arm64) | 3.13 | newest |
@@ -70,8 +83,8 @@ plus job `sdist` (ubuntu-latest, CPython 3.12, newest NumPy).
 ## Not tested
 
 * Linux and macOS (any interpreter), ARM, musl; the wheels built there.
-* NumPy 1.21.0 to 1.21.5, and every NumPy release between the tested ones.
-* Combinations for which, to our knowledge, NumPy publishes no wheel: NumPy 1.21
+* NumPy 1.22.1 to 1.22.3, and every NumPy release between the tested ones. Releases before 1.22.0 are unsupported (advisory).
+* Combinations for which, to our knowledge, NumPy publishes no wheel: NumPy 1.22
   with Python 3.11 or later, NumPy 1.x with Python 3.13. These were not attempted.
 * Free-threaded CPython and PyPy (not claimed).
 

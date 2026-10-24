@@ -9,25 +9,31 @@ Scope: what was run, what it found, and what it does not cover.
 | Rust, library crate (all features, dev-dependencies included), newest compatible lockfile, 90 crates | `cargo audit 0.22.2` | RustSec advisory-db, 1,352 advisories, fetched 2026-10-24 | no vulnerabilities and no warnings reported |
 | Rust, Python-binding crate (pyo3 0.30, numpy 0.30), 36 crates | `cargo audit 0.22.2` | same | no vulnerabilities and no warnings reported |
 | Rust, library crate, Rust 1.74 fallback lockfile, 80 crates | `cargo audit 0.22.2` | same | no vulnerabilities and no warnings reported |
-| Python, NumPy 1.21.6 (the declared floor) | `pip-audit` (OSV/PyPI data) | live | **1 known vulnerability: PYSEC-2021-855, fixed in 1.22** |
+| Python, NumPy 1.21.6 (the former floor) | `pip-audit` (OSV/PyPI data) | live | 1 known vulnerability: GHSA-fpfv-jqm9-f5jm / PYSEC-2021-855 / CVE-2021-34141, fixed in 1.22 |
+| Python, NumPy 1.22.0 and 1.22.4 (the new floor and a later 1.22) | PyPI JSON `vulnerabilities` field | live | none listed |
 | Python, NumPy 1.26.4 and 2.5.4 | `pip-audit` | live | none known |
 
 The lockfile used for the audit is regenerated each time because `Cargo.lock`
 is deliberately not committed for this library; users will resolve newer
 releases than the audit saw. Re-run the audit before each release.
 
-### NumPy 1.21.6 and PYSEC-2021-855
+### NumPy before 1.22 (resolved by raising the floor)
 
-The advisory is a 2021 NumPy issue (the same family as CVE-2021-41495 and
-CVE-2021-41496, which concern `numpy.f2py` and sorting and which NumPy
-maintainers have disputed). quantkit does not call `f2py`, and its bindings use
-NumPy only for array exchange, so the issue does not look reachable through
-quantkit. That is an assessment from reading the advisory title and quantkit's
-code surface, not a test. The consequence for the declared range is a decision
-for the maintainer: either keep `numpy>=1.21.6` (maximum compatibility, with
-the advisory documented here) or raise the floor to `1.22`, which also requires
-changing the CI pin, `docs/compatibility.md` and re-running the matrix row.
-No change was made.
+The advisory is GHSA-fpfv-jqm9-f5jm, with aliases CVE-2021-34141 and
+PYSEC-2021-855: an incorrect string comparison in `numpy.core` that lets crafted
+string objects make NumPy APIs fail (denial of service). Registries disagree on
+the range. The GitHub advisory and PyPI list all releases before 1.22 as
+affected, fixed in 1.22; the OSV PYSEC record lists only 1.9.0 to 1.9.3. The
+more conservative range was followed. (An earlier version of this note described
+the issue as an `f2py` problem; that was wrong.) quantkit passes float64 arrays
+to NumPy, not attacker-built string objects, so exposure through quantkit looks
+low, but that is an assessment, not a test.
+
+**Resolution:** the declared minimum is now `numpy>=1.22.0`. 1.22.0 and 1.22.4
+show no vulnerabilities on PyPI at check time. The wheel was rebuilt and the 23
+tests pass on CPython 3.9 with NumPy 1.22.0 and on CPython 3.10 with NumPy 1.22.0
+and 1.22.4. Metadata (`python/pyproject.toml`), CI pins, and
+`docs/compatibility.md` were changed together.
 
 ### Limits of this scan
 
