@@ -1,6 +1,6 @@
 //! Robustness tests: whatever garbage goes in, the public API must return
-//! `Ok` or `Err`, never panic. (Absurd but finite inputs may legitimately
-//! produce non-finite outputs; only panics and hangs are failures here.)
+//! `Ok` or `Err`, never panic. Successful Result-valued risk and quantile
+//! calculations must also be finite. Raw unchecked helpers may return NaN.
 
 use proptest::prelude::*;
 use quantkit::mc::{self, McConfig};
@@ -30,7 +30,7 @@ fn wild_vec(max_len: usize) -> impl Strategy<Value = Vec<f64>> {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(400))]
+    #![proptest_config(ProptestConfig::with_cases(std::env::var("PROPTEST_CASES").ok().and_then(|s| s.parse().ok()).unwrap_or(400)))]
 
     #[test]
     fn pricing_pipeline_never_panics(
@@ -78,14 +78,12 @@ proptest! {
     ) {
         let _ = dist::norm_pdf(x);
         let _ = dist::norm_cdf(x);
-        let _ = dist::norm_inv_cdf(x);
-        let _ = risk::historical_var(&rets, conf);
-        let _ = risk::historical_cvar(&rets, conf);
-        let _ = risk::parametric_var(&rets, conf);
-        let _ = risk::sharpe_ratio(&rets, rf, ppy);
-        let _ = risk::sortino_ratio(&rets, rf, ppy);
-        let _ = risk::max_drawdown(&rets);
-        let _ = risk::annualized_volatility(&rets, ppy);
+        for value in [dist::norm_inv_cdf(x), risk::historical_var(&rets, conf),
+            risk::historical_cvar(&rets, conf), risk::parametric_var(&rets, conf),
+            risk::sharpe_ratio(&rets, rf, ppy), risk::sortino_ratio(&rets, rf, ppy),
+            risk::max_drawdown(&rets), risk::annualized_volatility(&rets, ppy)].into_iter().flatten() {
+            prop_assert!(value.is_finite());
+        }
     }
 
     #[test]

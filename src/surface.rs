@@ -163,6 +163,8 @@ pub struct ArbitrageReport {
     pub calendar: Vec<CalendarViolation>,
     /// Butterfly / vertical-spread violations.
     pub butterfly: Vec<ButterflyViolation>,
+    /// Number of grid or quote evaluations that could not produce finite prices.
+    pub evaluation_errors: usize,
 }
 
 /// Which points an [`ArbitrageReport`] covers. Neither scope is a proof of a
@@ -192,7 +194,7 @@ impl ArbitrageReport {
     /// `true` when no violations were found **within [`ArbitrageReport::scope`]**.
     /// This does not certify the surface is arbitrage-free elsewhere.
     pub fn is_clean(&self) -> bool {
-        self.calendar.is_empty() && self.butterfly.is_empty()
+        self.calendar.is_empty() && self.butterfly.is_empty() && self.evaluation_errors == 0
     }
 }
 
@@ -294,8 +296,14 @@ impl VolSurface {
                     .expiry(sl.expiry)
                     .build()?;
             }
-            let fwd = spot * ((rate - dividend_yield) * sl.expiry).exp();
-            let ks = sl.strikes.iter().map(|&k| (k / fwd).ln()).collect();
+            let ks: Vec<f64> = sl
+                .strikes
+                .iter()
+                .map(|&k| k.ln() - spot.ln() - (rate - dividend_yield) * sl.expiry)
+                .collect();
+            if ks.windows(2).any(|w| w[1] <= w[0]) {
+                return Err(QuantError::InvalidInput { name: "strikes", reason: "log-moneyness coordinates are indistinguishable at floating-point precision" });
+            }
             smiles.push(Smile {
                 expiry: sl.expiry,
                 strikes: sl.strikes,
@@ -376,8 +384,8 @@ impl VolSurface {
         Self::new(spot, rate, dividend_yield, slices)
     }
 
-    fn forward(&self, t: f64) -> f64 {
-        self.spot * ((self.rate - self.dividend_yield) * t).exp()
+    fn log_forward(&self, t: f64) -> f64 {
+        self.spot.ln() + (self.rate - self.dividend_yield) * t
     }
 
     /// Interpolated implied volatility at `(strike, expiry)`.
@@ -401,7 +409,8 @@ impl VolSurface {
     pub fn vol(&self, strike: f64, expiry: f64) -> Result<f64> {
         check_positive("strike", strike)?;
         check_positive("expiry", expiry)?;
-        let k = (strike / self.forward(expiry)).ln();
+        let k = strike.ln() - self.spot.ln() - (self.rate - self.dividend_yield) * expiry;
+        check_finite("log_moneyness", k)?;
         let first = &self.smiles[0];
         let last = &self.smiles[self.smiles.len() - 1];
         if expiry <= first.expiry {
@@ -512,6 +521,7 @@ impl VolSurface {
                         .unwrap_or(f64::NAN)
                 })
                 .collect();
+            report.evaluation_errors += calls.iter().filter(|v| !v.is_finite()).count();
             butterfly_checks(
                 &s.strikes,
                 &calls,
@@ -594,8 +604,8 @@ impl VolSurface {
         let tol = 1e-10 * self.spot;
         let mut previous: Option<(f64, Vec<f64>)> = None;
         for &t in &expiries {
-            let fwd = self.forward(t);
-            let strikes: Vec<f64> = ks.iter().map(|k| fwd * k.exp()).collect();
+            let log_fwd = self.log_forward(t);
+            let strikes: Vec<f64> = ks.iter().map(|k| (log_fwd + k).exp()).collect();
             let vols: Vec<f64> = strikes
                 .iter()
                 .map(|&k| self.vol(k, t).unwrap_or(f64::NAN))
@@ -630,6 +640,7 @@ impl VolSurface {
                         .unwrap_or(f64::NAN)
                 })
                 .collect();
+            report.evaluation_errors += calls.iter().filter(|v| !v.is_finite()).count();
             butterfly_checks(
                 &strikes,
                 &calls,
@@ -763,7 +774,7 @@ impl SviParams {
     /// Total variance `w(k)` at log-moneyness `k`.
     pub fn total_variance(&self, k: f64) -> f64 {
         let x = k - self.m;
-        self.a + self.b * (self.rho * x + (x * x + self.sigma * self.sigma).sqrt())
+        self.a + self.b * (self.rho * x + x.hypot(self.sigma))
     }
 
     /// Implied volatility at log-moneyness `k` and expiry `t`.
@@ -794,10 +805,10 @@ impl SviParams {
     /// ```
     pub fn butterfly_g(&self, k: f64) -> f64 {
         let x = k - self.m;
-        let r = (x * x + self.sigma * self.sigma).sqrt();
+        let r = x.hypot(self.sigma);
         let w = self.total_variance(k);
         let w1 = self.b * (self.rho + x / r);
-        let w2 = self.b * self.sigma * self.sigma / (r * r * r);
+        let w2 = self.b * (self.sigma / r).powi(2) / r;
         let t = 1.0 - k * w1 / (2.0 * w);
         t * t - 0.25 * w1 * w1 * (1.0 / w + 0.25) + 0.5 * w2
     }

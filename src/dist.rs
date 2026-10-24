@@ -51,7 +51,8 @@ pub fn norm_cdf(x: f64) -> f64 {
 ///
 /// Uses Acklam's rational approximation (relative error about 1e-9)
 /// followed by one Halley refinement step against [`norm_cdf`], which brings
-/// it to near machine precision.
+/// it to near machine precision. Beyond eight standard deviations a log-tail
+/// Newton refinement avoids underflow.
 ///
 /// # Errors
 ///
@@ -125,8 +126,28 @@ pub fn norm_inv_cdf(p: f64) -> Result<f64> {
             / ((((D[0] * q + D[1]) * q + D[2]) * q + D[3]) * q + 1.0)
     };
 
-    // One Halley step.
-    let e = norm_cdf(x) - p;
+    // In deep tails, refine log(Phi) using the continued fraction for the
+    // Mills ratio. Neither a subnormal CDF nor an overflowing reciprocal PDF
+    // is formed. Symmetry also avoids cancellation in the upper tail.
+    if x.abs() > 8.0 {
+        let target = libm::log(if p < 0.5 { p } else { 1.0 - p });
+        let mut z = x.abs();
+        for _ in 0..3 {
+            let mut fraction = 0.0;
+            for n in (1..=64).rev() {
+                fraction = n as f64 / (z + fraction);
+            }
+            let mills = 1.0 / (z + fraction);
+            let log_tail = -0.5 * z * z - libm::log(SQRT_2PI) + libm::log(mills);
+            z += (log_tail - target) * mills;
+        }
+        return Ok(if p < 0.5 { -z } else { z });
+    }
+    let e = if x > 0.0 {
+        (1.0 - p) - norm_cdf(-x)
+    } else {
+        norm_cdf(x) - p
+    };
     let u = e * SQRT_2PI * libm::exp(0.5 * x * x);
     Ok(x - u / (1.0 + 0.5 * x * u))
 }

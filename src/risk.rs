@@ -21,8 +21,7 @@
 //! * **Historical VaR** at confidence `c` with `n` observations uses
 //!   `k = ceil(n (1 - c))` (at least 1): it is the `k`-th worst return,
 //!   negated, with no interpolation. Fractional tail mass therefore rounds
-//!   the tail *up* (a slightly larger tail, a slightly more conservative
-//!   VaR). Tied returns are fine. With few observations the tail is a single
+//!   the tail *up* (a larger tail and a weakly smaller loss quantile). Tied returns are fine. With few observations the tail is a single
 //!   point, so treat results from `n < 1 / (1 - c)` as the sample minimum.
 //! * **Historical CVaR / expected shortfall** is the mean of the same `k`
 //!   worst returns, negated; it is always at least the VaR.
@@ -66,13 +65,17 @@ fn validate_confidence(confidence: f64) -> Result<()> {
     Ok(())
 }
 
-/// Running mean, which cannot overflow when the plain sum would.
+/// Mean computed after scaling, so opposite-sign finite values cannot overflow.
 fn mean(xs: &[f64]) -> f64 {
+    let scale = xs.iter().fold(0.0_f64, |a, x| a.max(x.abs()));
+    if scale == 0.0 {
+        return 0.0;
+    }
     let mut m = 0.0;
     for (i, &x) in xs.iter().enumerate() {
-        m += (x - m) / (i + 1) as f64;
+        m += (x / scale - m) / (i + 1) as f64;
     }
-    m
+    m.clamp(-1.0, 1.0) * scale
 }
 
 /// Returns `x` if finite, otherwise an error: successful results are always finite.
@@ -91,15 +94,13 @@ fn sample_std(xs: &[f64]) -> Result<f64> {
             reason: "need at least two observations",
         });
     }
-    // Scale by the largest deviation so tiny (1e-200) or huge (1e150) returns
-    // neither underflow to a spurious zero variance nor overflow.
-    let m = mean(xs);
-    let scale = xs.iter().fold(0.0_f64, |a, x| a.max((x - m).abs()));
-    if scale == 0.0 || !scale.is_finite() {
-        return Ok(scale);
+    let scale = xs.iter().fold(0.0_f64, |a, x| a.max(x.abs()));
+    if scale == 0.0 {
+        return Ok(0.0);
     }
-    let ss: f64 = xs.iter().map(|x| ((x - m) / scale).powi(2)).sum();
-    Ok(scale * (ss / (xs.len() - 1) as f64).sqrt())
+    let m = mean(xs) / scale;
+    let ss: f64 = xs.iter().map(|x| (x / scale - m).powi(2)).sum();
+    finite(scale * (ss / (xs.len() - 1) as f64).sqrt())
 }
 
 /// Number of observations in the tail: `ceil(n * (1 - confidence))`, at
@@ -163,7 +164,7 @@ pub fn historical_cvar(returns: &[f64], confidence: f64) -> Result<f64> {
     let k = tail_count(returns.len(), confidence);
     let mut v = returns.to_vec();
     v.select_nth_unstable_by(k - 1, f64::total_cmp);
-    Ok(-mean(&v[..k]))
+    finite(-mean(&v[..k]))
 }
 
 /// Parametric (variance-covariance) VaR assuming normally distributed
@@ -220,14 +221,19 @@ pub fn sharpe_ratio(
     validate("returns", returns)?;
     crate::error::check_finite("risk_free_per_period", risk_free_per_period)?;
     check_positive("periods_per_year", periods_per_year)?;
-    let s = sample_std(returns)?;
+    let scale = returns
+        .iter()
+        .fold(risk_free_per_period.abs(), |a, x| a.max(x.abs()))
+        .max(f64::MIN_POSITIVE);
+    let scaled: Vec<f64> = returns.iter().map(|x| x / scale).collect();
+    let s = sample_std(&scaled)?;
     if s == 0.0 {
         return Err(QuantError::InvalidInput {
             name: "returns",
             reason: "zero volatility: Sharpe ratio is undefined",
         });
     }
-    finite((mean(returns) - risk_free_per_period) / s * periods_per_year.sqrt())
+    finite((mean(&scaled) - risk_free_per_period / scale) / s * periods_per_year.sqrt())
 }
 
 /// Annualised Sortino ratio: `(mean - target) / downside_deviation *
@@ -260,26 +266,25 @@ pub fn sortino_ratio(
     validate("returns", returns)?;
     crate::error::check_finite("target_per_period", target_per_period)?;
     check_positive("periods_per_year", periods_per_year)?;
-    let worst_shortfall = returns
+    let scale = returns
         .iter()
-        .fold(0.0_f64, |a, r| a.max((target_per_period - r).max(0.0)));
-    let downside_sq = if worst_shortfall == 0.0 || !worst_shortfall.is_finite() {
-        worst_shortfall
-    } else {
-        let scaled: f64 = returns
-            .iter()
-            .map(|r| ((r - target_per_period).min(0.0) / worst_shortfall).powi(2))
-            .sum::<f64>()
-            / returns.len() as f64;
-        worst_shortfall * worst_shortfall * scaled
-    };
-    if downside_sq == 0.0 {
+        .fold(target_per_period.abs(), |a, x| a.max(x.abs()));
+    let scale = if scale == 0.0 { 1.0 } else { scale };
+    let scaled: Vec<f64> = returns.iter().map(|x| x / scale).collect();
+    let target = target_per_period / scale;
+    let downside = (scaled
+        .iter()
+        .map(|r| (r - target).min(0.0).powi(2))
+        .sum::<f64>()
+        / returns.len() as f64)
+        .sqrt();
+    if downside == 0.0 {
         return Err(QuantError::InvalidInput {
             name: "returns",
             reason: "no returns below target: Sortino ratio is undefined",
         });
     }
-    finite((mean(returns) - target_per_period) / downside_sq.sqrt() * periods_per_year.sqrt())
+    finite((mean(&scaled) - target) / downside * periods_per_year.sqrt())
 }
 
 /// Maximum drawdown of the equity curve implied by compounding `returns`

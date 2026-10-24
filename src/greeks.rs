@@ -147,7 +147,7 @@ const MIN_REL_STEP: f64 = 1e-6;
 ///   [`MIN_REL_STEP`] of `scale`.
 /// * Central differences with the (possibly slightly unequal) actual steps are
 ///   used when both neighbours are valid inputs. If a neighbour falls outside
-///   the supported domain (the callback returns an error), the one-sided
+///   the supported domain (the callback returns `None`), the one-sided
 ///   second-order formulas on the valid side are used instead:
 ///   `f' = (-3 f0 + 4 f1 - 2 f2 ... )` in the standard three-point form and
 ///   `f'' = (2 f0 - 5 f1 + 4 f2 - f3) / h^2` (and mirrored for the backward
@@ -156,13 +156,15 @@ const MIN_REL_STEP: f64 = 1e-6;
 ///   differences.
 fn derivatives12<F>(f: F, x: f64, h: f64, scale: f64, f0: f64) -> Result<(f64, f64)>
 where
-    F: Fn(f64) -> Result<f64>,
+    F: Fn(f64) -> Result<Option<f64>>,
 {
     let not_finite = || QuantError::NonFinite { name: "price" };
-    let checked = |v: Result<f64>| -> Result<f64> {
-        let v = v?;
+    let checked = |v: Result<Option<f64>>| -> Result<Option<f64>> {
+        let Some(v) = v? else {
+            return Ok(None);
+        };
         if v.is_finite() {
-            Ok(v)
+            Ok(Some(v))
         } else {
             Err(not_finite())
         }
@@ -177,22 +179,15 @@ where
         });
     }
 
-    let central = (checked(f(up)), checked(f(down)));
-    match central {
-        (Ok(fu), Ok(fd)) => {
-            let d1 = (h2 * h2 * (fu - f0) - h1 * h1 * (fd - f0)) / (h1 * h2 * (h1 + h2));
-            let d2 = 2.0 * ((fu - f0) / h1 - (f0 - fd) / h2) / (h1 + h2);
-            return finite_pair(d1, d2);
-        }
-        // A non-finite price is a real failure, not a domain boundary.
-        (Err(e @ QuantError::NonFinite { .. }), _) | (_, Err(e @ QuantError::NonFinite { .. })) => {
-            return Err(e);
-        }
-        _ => {}
+    let central = (checked(f(up))?, checked(f(down))?);
+    if let (Some(fu), Some(fd)) = central {
+        let d1 = (h2 * h2 * (fu - f0) - h1 * h1 * (fd - f0)) / (h1 * h2 * (h1 + h2));
+        let d2 = 2.0 * ((fu - f0) / h1 - (f0 - fd) / h2) / (h1 + h2);
+        return finite_pair(d1, d2);
     }
 
     // Domain boundary: try the forward, then the backward one-sided formulas.
-    let one_sided = |sign: f64| -> Result<(f64, f64)> {
+    let one_sided = |sign: f64| -> Result<Option<(f64, f64)>> {
         let x1 = x + sign * h;
         let x2 = x + sign * 2.0 * h;
         let x3 = x + sign * 3.0 * h;
@@ -203,20 +198,28 @@ where
                 reason: "bump is too small for one-sided differences",
             });
         }
-        let (f1, f2, f3) = (checked(f(x1))?, checked(f(x2))?, checked(f(x3))?);
+        let Some(f1) = checked(f(x1))? else {
+            return Ok(None);
+        };
+        let Some(f2) = checked(f(x2))? else {
+            return Ok(None);
+        };
+        let Some(f3) = checked(f(x3))? else {
+            return Ok(None);
+        };
         // For the backward side the odd derivative changes sign.
         let d1 = sign * (-3.0 * f0 + 4.0 * f1 - f2) / (2.0 * step);
         let d2 = (2.0 * f0 - 5.0 * f1 + 4.0 * f2 - f3) / (step * step);
-        finite_pair(d1, d2)
+        finite_pair(d1, d2).map(Some)
     };
-    match one_sided(1.0) {
-        Ok(v) => Ok(v),
-        Err(e @ QuantError::NonFinite { .. }) => Err(e),
-        Err(_) => one_sided(-1.0).or(Err(QuantError::InvalidInput {
-            name: "bumps",
-            reason: "input is too close to the supported-domain boundary on both sides for this bump size",
-        })),
+    if let Some(value) = one_sided(1.0)? {
+        return Ok(value);
     }
+    one_sided(-1.0)?.ok_or(QuantError::InvalidInput {
+        name: "bumps",
+        reason:
+            "input is too close to the supported-domain boundary on both sides for this bump size",
+    })
 }
 
 fn finite_pair(d1: f64, d2: f64) -> Result<(f64, f64)> {
@@ -288,7 +291,12 @@ where
             });
         }
     }
-    let eval = |q: Result<OptionParams>| -> Result<f64> { price(&q?) };
+    let eval = |q: Result<OptionParams>| -> Result<Option<f64>> {
+        match q {
+            Ok(q) => price(&q).map(Some),
+            Err(_) => Ok(None),
+        }
+    };
     let base = {
         let v = price(p)?;
         if !v.is_finite() {

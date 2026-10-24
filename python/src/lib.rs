@@ -728,6 +728,8 @@ fn report_dict<'py>(
     let d = PyDict::new(py);
     d.set_item("calendar", r.calendar.len())?;
     d.set_item("butterfly", r.butterfly.len())?;
+    d.set_item("evaluation_errors", r.evaluation_errors)?;
+    d.set_item("is_clean", r.is_clean())?;
     d.set_item(
         "scope",
         match r.scope {
@@ -888,6 +890,19 @@ fn make_dataset<'py>(
     meta.set_item("boundary_rows", m.boundary_rows)?;
     meta.set_item("checksum", m.checksum)?;
     meta.set_item("seed", seed)?;
+    let specification = PyDict::new(py);
+    specification.set_item("rows", rows)?;
+    specification.set_item("seed", seed)?;
+    specification.set_item("spot", spot)?;
+    specification.set_item("moneyness", moneyness)?;
+    specification.set_item("expiry", expiry)?;
+    specification.set_item("volatility", volatility)?;
+    specification.set_item("rate", rate)?;
+    specification.set_item("dividend_yield", dividend_yield)?;
+    specification.set_item("kinds", kinds)?;
+    specification.set_item("latin_hypercube", latin_hypercube)?;
+    specification.set_item("include_boundary", include_boundary)?;
+    meta.set_item("spec", specification)?;
     meta.set_item("invariants", inv)?;
     let out = PyDict::new(py);
     out.set_item("columns", cols)?;

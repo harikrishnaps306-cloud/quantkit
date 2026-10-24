@@ -6,6 +6,19 @@ follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- Numerical Greeks now propagate pricer errors instead of treating them as parameter boundaries and silently switching stencils.
+- Extreme CRR trees use log-domain rollback instead of silently losing terminal stock nodes to underflow. Non-finite results are errors.
+- CVaR uses a scaled mean; Sharpe and Sortino normalize inputs before arithmetic. Representable extreme-scale ratios no longer silently become zero or NaN.
+- Normal quantiles use log-tail refinement beyond eight standard deviations, including subnormal probabilities.
+- Surface log-moneyness and reconstructed strikes avoid overflowing forwards. Indistinguishable log coordinates are rejected.
+- Arbitrage reports expose `evaluation_errors`; `is_clean()` is false when evaluations fail. Python reports add `evaluation_errors` and `is_clean` keys. Adding the Rust field affects callers constructing report struct literals.
+- Implied-volatility convergence errors carry actual absolute price residuals.
+- Normalized Black price helpers reject non-finite/invalid arguments with NaN before evaluation. SVI uses `hypot` instead of squaring large coordinates.
+- Python dataset metadata includes `spec`, containing the arguments needed to replay generation.
+
+Validation of these changes is recorded in `docs/audit-fixes.md`. Earlier compatibility and performance reports describe earlier revisions; they are not new cross-platform evidence.
+
 ## [0.2.0]
 
 Initial experimental release candidate (not published). The `0.x` API may change between minor versions.

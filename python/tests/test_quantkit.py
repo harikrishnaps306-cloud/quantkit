@@ -236,3 +236,29 @@ def test_mc_european_survives_overflowing_terminal_prices():
     assert np.isfinite(price) and np.isfinite(se) and abs(price - exact) < 4 * se
     d = qk.mc_european_detailed(100.0, 100.0, 10.0, 0.2, 50.0, div_yield=-10.0, paths=100, seed=1)
     assert d["status"] == qk.STATUS["Ok"] and np.isfinite(d["price"])
+
+
+def test_audit_extreme_risk_and_tree_regressions():
+    assert qk.binomial_price(100., 100., 0., 100., 1., american=False, steps=100) == pytest.approx(100., abs=1e-8)
+    for scale in (1e-200, 1e200):
+        xs = np.array([.02, -.01, .03, -.02]) * scale
+        assert qk.sortino_ratio(xs, 0., 1.) == pytest.approx(0.4472135954999579, abs=1e-12)
+    maximum = np.finfo(float).max
+    assert qk.historical_cvar(np.array([-maximum, maximum, maximum]), .1) / maximum == pytest.approx(-1/3)
+
+
+def test_audit_surface_forward_overflow():
+    surface = qk.VolSurface(100., [(50., [90., 100., 110.], [.2, .3, .4])], rate=10., div_yield=-10.)
+    for strike, vol in [(90., .2), (100., .3), (110., .4)]:
+        assert surface.vol(strike, 50.) == pytest.approx(vol, abs=1e-12)
+    report = surface.check_arbitrage_sampled()
+    assert report["evaluation_errors"] == 0
+    assert isinstance(report["is_clean"], bool)
+
+
+def test_dataset_metadata_can_replay_generation():
+    dataset = qk.make_dataset(rows=17, seed=88, spot=123., volatility=(.1, .4), kinds="puts", latin_hypercube=False, include_boundary=False)
+    replay = qk.make_dataset(**dataset["metadata"]["spec"])
+    assert dataset["metadata"]["checksum"] == replay["metadata"]["checksum"]
+    for column in dataset["columns"]:
+        np.testing.assert_array_equal(dataset["columns"][column], replay["columns"][column])

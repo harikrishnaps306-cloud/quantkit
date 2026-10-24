@@ -291,12 +291,10 @@ pub fn solve_detailed(
     };
 
     let (mut newton_steps, mut bisection_steps) = (0usize, 0usize);
-    let mut last = f64::INFINITY;
     for _ in 0..config.max_iterations {
         let ln_b = ln_normalised_otm(xo, s);
         let f = ln_b - ln_beta;
-        last = f.abs();
-        if last <= tol {
+        if f.abs() <= tol {
             return finish(s, newton_steps + bisection_steps, newton_steps);
         }
         if f > 0.0 {
@@ -324,13 +322,13 @@ pub fn solve_detailed(
             }
             return Err(QuantError::NoConvergence {
                 iterations: newton_steps + bisection_steps,
-                residual: f.abs() * time_value,
+                residual: (model((s / sqrt_t).clamp(MIN_VOL, MAX_VOL))? - market_price).abs(),
             });
         }
     }
     Err(QuantError::NoConvergence {
         iterations: config.max_iterations,
-        residual: last * time_value,
+        residual: (model((s / sqrt_t).clamp(MIN_VOL, MAX_VOL))? - market_price).abs(),
     })
 }
 

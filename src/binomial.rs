@@ -51,7 +51,11 @@ pub fn price(
     }
     let n = steps;
     let dt = p.expiry() / n as f64;
-    let u = (p.volatility() * dt.sqrt()).exp();
+    let jump = p.volatility() * dt.sqrt();
+    if jump * n as f64 > 600.0 {
+        return log_tree(p, kind, style, n, dt, jump);
+    }
+    let u = jump.exp();
     let d = 1.0 / u;
     let growth = ((p.rate() - p.dividend_yield()) * dt).exp();
     let prob = (growth - d) / (u - d);
@@ -90,7 +94,69 @@ pub fn price(
             s *= u2;
         }
     }
-    Ok(values[0])
+    if values[0].is_finite() {
+        Ok(values[0])
+    } else {
+        Err(QuantError::NonFinite { name: "tree price" })
+    }
+}
+
+// Log-domain fallback: extreme terminal stock values can exceed f64 even
+// when their probability-weighted option value is perfectly representable.
+fn log_tree(
+    p: &OptionParams,
+    kind: OptionType,
+    style: ExerciseStyle,
+    n: usize,
+    dt: f64,
+    jump: f64,
+) -> Result<f64> {
+    let drift = (p.rate() - p.dividend_yield()) * dt;
+    if drift.abs() >= jump {
+        return Err(QuantError::InvalidInput {
+            name: "steps",
+            reason: "risk-neutral probability is outside (0, 1)",
+        });
+    }
+    let log_one_minus_exp = |x: f64| (-x.exp_m1()).ln();
+    let log_up = drift - jump + log_one_minus_exp(-drift - jump) - log_one_minus_exp(-2.0 * jump);
+    let log_down = log_one_minus_exp(drift - jump) - log_one_minus_exp(-2.0 * jump);
+    let log_payoff = |layer: usize, j: usize| {
+        let stock = p.spot().ln() + (2.0 * j as f64 - layer as f64) * jump;
+        let strike = p.strike().ln();
+        let (hi, lo) = match kind {
+            OptionType::Call => (stock, strike),
+            OptionType::Put => (strike, stock),
+        };
+        if hi <= lo {
+            f64::NEG_INFINITY
+        } else {
+            hi + log_one_minus_exp(lo - hi)
+        }
+    };
+    let mut values: Vec<f64> = (0..=n).map(|j| log_payoff(n, j)).collect();
+    for layer in (0..n).rev() {
+        for j in 0..=layer {
+            let a = log_up + values[j + 1];
+            let b = log_down + values[j];
+            let hi = a.max(b);
+            let continuation = if hi == f64::NEG_INFINITY {
+                hi
+            } else {
+                hi + (a.min(b) - hi).exp().ln_1p() - p.rate() * dt
+            };
+            values[j] = match style {
+                ExerciseStyle::European => continuation,
+                ExerciseStyle::American => continuation.max(log_payoff(layer, j)),
+            };
+        }
+    }
+    let value = values[0].exp();
+    if value.is_finite() {
+        Ok(value)
+    } else {
+        Err(QuantError::NonFinite { name: "tree price" })
+    }
 }
 
 /// Bump-and-reprice Greeks for the binomial pricer, using central

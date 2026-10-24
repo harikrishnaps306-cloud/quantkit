@@ -228,8 +228,8 @@ fn b_fast(x: f64, s: f64) -> Option<f64> {
 ///
 /// # Panics
 ///
-/// Does not panic. Arguments outside `x <= 0`, `s > 0` give a meaningless
-/// (possibly `NaN`) result.
+/// Does not panic. Non-finite arguments or arguments outside `x <= 0`,
+/// `s > 0` return `NaN`.
 ///
 /// # Examples
 ///
@@ -241,6 +241,9 @@ fn b_fast(x: f64, s: f64) -> Option<f64> {
 /// assert!(normalised_otm(-0.6, 0.02) < 1e-190);
 /// ```
 pub fn normalised_otm(x: f64, s: f64) -> f64 {
+    if !x.is_finite() || !s.is_finite() || x > 0.0 || s <= 0.0 {
+        return f64::NAN;
+    }
     if x == 0.0 {
         return libm::erf(s / (2.0 * SQRT_2));
     }
@@ -261,6 +264,9 @@ pub fn normalised_otm(x: f64, s: f64) -> f64 {
 /// assert!(ln_normalised_otm(-2.0, 0.1).is_finite());
 /// ```
 pub fn ln_normalised_otm(x: f64, s: f64) -> f64 {
+    if !x.is_finite() || !s.is_finite() || x > 0.0 || s <= 0.0 {
+        return f64::NAN;
+    }
     if x == 0.0 {
         return libm::log(libm::erf(s / (2.0 * SQRT_2)));
     }
