@@ -61,24 +61,42 @@ outputs inside; licence files present) was built and installed by pip into a
 fresh isolated virtualenv on CPython 3.12.13 with NumPy 2.5.4, and the same 23
 tests passed against the installed copy.
 
-## Executed in CI on GitHub (run on commit `9a28f6e`, 13 of 13 jobs passed)
+## Executed on GitHub
 
-The first run (commit `dcc3b18`) passed 12 of 13; the failure was the Ubuntu CPython 3.9 row, because `ubuntu-latest` is now Ubuntu 26.04 and `setup-python` has no 3.9 for it. That row is pinned to `ubuntu-24.04`. CI logs were not read in full; results are job and step conclusions from the GitHub API.
+Results are job and step conclusions read from the GitHub API; logs were not read
+in full. Commits: first full pass `9a28f6e`; latest verified at the time of writing
+`62bab38` (CI 13 of 13, and the release dry run below). Later commits have their
+own runs in the Actions tab.
 
-`.github/workflows/ci.yml`, job `python` (`numpy` with no pin means the newest
-release for that interpreter):
+The first run (commit `dcc3b18`) passed 12 of 13; the failure was the Ubuntu
+CPython 3.9 row, because `ubuntu-latest` is now Ubuntu 26.04 and `setup-python`
+has no 3.9 for it. That row is pinned to `ubuntu-24.04`.
 
-| runner | CPython | NumPy |
+### Which wheel was tested on which interpreter
+
+Exactly these combinations, and no others, were installed and tested by the
+workflows (a wheel is abi3, so one wheel per platform serves every CPython >= 3.9,
+but only the listed interpreters were exercised):
+
+| platform | CI (`ci.yml`, wheel built in the job) | Release dry run (`release.yml`, the artifact that would be uploaded) |
 |---|---|---|
-| ubuntu-24.04 (pinned; `ubuntu-latest` has no CPython 3.9) | 3.9 | 1.22.0 |
-| ubuntu-latest | 3.11 | 1.26.4 |
-| ubuntu-latest | 3.13 | newest |
-| windows-latest | 3.9 | 1.22.0 |
-| windows-latest | 3.13 | newest |
-| macos-latest (arm64) | 3.11 | 1.26.4 |
-| macos-latest (arm64) | 3.13 | newest |
+| Linux x86-64 | 3.9 + NumPy 1.22.0 (ubuntu-24.04), 3.11 + 1.26.4, 3.13 + newest | 3.9 + 1.22.0, 3.13 + newest |
+| macOS arm64 | 3.11 + 1.26.4, 3.13 + newest | **3.13 + newest only** |
+| Windows x86-64 | 3.9 + 1.22.0, 3.13 + newest | **3.9 + 1.22.0 only** |
 
-plus job `sdist` (ubuntu-latest, CPython 3.12, newest NumPy).
+So the macOS release artifact was tested on 3.13 only and the Windows release
+artifact on 3.9 only; their other interpreters rest on the CI wheels (built the
+same way) and on the abi3 design, not on a test of the release file. CPython 3.10,
+3.12 and 3.14 were tested only locally on Windows (table above), and not at all
+on Linux or macOS.
+
+### Release workflow dry run (publishing off)
+
+Run 40119810048 on `62bab38`: three wheels and the sdist built; wheels installed
+and tested as in the table; `twine check --strict` passed; the PyPI job was
+skipped. The inspection of platform tags, dependency metadata and licences
+(`.github/scripts/inspect_dists.py`) and the pip check that NumPy 1.21.6 is
+refused were added afterwards and run in the next dry run.
 
 ## Not tested
 

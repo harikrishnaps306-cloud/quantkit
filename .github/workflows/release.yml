@@ -144,12 +144,22 @@ jobs:
           cd verify-tests
           "$PY" -c "import sys, numpy, quantkit, importlib.metadata as m; d = m.distribution('quantkit-rs'); print(d.metadata['Name'], d.version, 'numpy', numpy.__version__, sys.version.split()[0]); assert 'site-packages' in quantkit.__file__.replace(chr(92), '/'); names = [str(f) for f in d.files]; assert any(n.endswith('THIRD_PARTY_NOTICES.txt') for n in names), 'notices missing'; assert any(n.endswith('LICENSE-MIT.txt') for n in names) and any(n.endswith('LICENSE-APACHE.txt') for n in names), 'licences missing'"
           "$PY" -m pytest -q -p no:cacheprovider
+      - name: pip refuses the wheel together with NumPy 1.21.6 (the declared floor is real)
+        if: ${{ matrix.numpy == 'numpy==1.22.0' }}
+        run: |
+          if [ -d .venv-verify/Scripts ]; then PY="$PWD/.venv-verify/Scripts/python"; else PY="$PWD/.venv-verify/bin/python"; fi
+          if "$PY" -m pip install --dry-run --only-binary=:all: --no-input dist/*.whl "numpy==1.21.6" > floor.txt 2>&1; then
+            cat floor.txt; echo "pip accepted NumPy 1.21.6, the metadata floor is wrong"; exit 1
+          fi
+          cat floor.txt
+          grep -q "conflicting dependencies" floor.txt
 
   check-distributions:
     name: metadata check of the distributions
     needs: verify
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
           pattern: "{wheel-*,sdist}"
@@ -160,11 +170,11 @@ jobs:
           python-version: "3.12"
       - name: twine check and file inventory
         run: |
-          python -m pip install twine
+          python -m pip install twine packaging
           ls -l dist
-          test "$(ls dist/*.whl | wc -l)" -eq 3
-          test "$(ls dist/*.tar.gz | wc -l)" -eq 1
           python -m twine check --strict dist/*
+      - name: inspect platform tags, dependency metadata, licences and notices
+        run: python .github/scripts/inspect_dists.py dist
 
   publish:
     name: publish to PyPI (trusted publishing)

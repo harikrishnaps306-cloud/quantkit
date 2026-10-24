@@ -15,8 +15,10 @@ the publisher. Read this page before the first release.
    project name `quantkit-rs`, owner `harikrishnaps306-cloud`, repository
    `quantkit`, workflow file `release.yml`, environment `pypi`.
 3. In the GitHub repository, Settings, Environments: create an environment named
-   `pypi` and add **required reviewers** (yourself). That approval is the last
-   gate before an upload.
+   `pypi` **before the first publish run** and add **required reviewers**
+   (yourself). That approval is the last gate before an upload. If the
+   environment does not exist, GitHub creates it on first use *without* any
+   protection, and the upload would then proceed with no approval step.
 
 **crates.io**
 
@@ -40,9 +42,13 @@ the publisher. Read this page before the first release.
 
 3. **Dry run of the Python release.** Actions, Release, Run workflow, branch
    `master`, `publish` unchecked. It builds the three wheels and the sdist,
-   installs each wheel in a clean virtualenv and runs the tests, and runs
-   `twine check --strict`. Download the `wheel-*` and `sdist` artifacts if you
-   want to inspect them.
+   installs each wheel in a clean virtualenv and runs the tests (Linux on
+   3.9 + NumPy 1.22.0 and 3.13, macOS on 3.13, Windows on 3.9 + NumPy 1.22.0; see
+   `docs/compatibility.md` for what that does and does not cover), checks that
+   pip refuses NumPy 1.21.6 with the wheel, runs `twine check --strict`, and runs
+   `.github/scripts/inspect_dists.py`, which asserts platform tags, dependency
+   metadata, licences and notices on every file. Download the `wheel-*` and
+   `sdist` artifacts if you want to inspect them yourself.
 4. **Publish to PyPI.** Run the same workflow with `publish` checked and
    `confirm_version` set to the exact version (for example `0.2.0`). It refuses
    unless the branch is `master` and the confirmation matches. Approve the `pypi`
