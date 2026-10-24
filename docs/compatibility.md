@@ -20,7 +20,7 @@ documents `>= 1.16` as recommended but that statement is not a test of quantkit.
 
 ## Executed: wheel in a clean virtualenv, 23 tests each (Windows 11 x86-64)
 
-One wheel, `quantkit-0.2.0-cp39-abi3-win_amd64.whl`, built with
+One wheel, `quantkit-0.2.0-cp39-abi3-win_amd64.whl` (built before the distribution was renamed to `quantkit-rs`; it is now `quantkit_rs-0.2.0-...`), built with
 `maturin 1.15.0` from a fresh clone of commit `2b5e59a`, installed into a fresh
 `uv venv` for each row (`include-system-site-packages = false`, checked in each
 `pyvenv.cfg`); the test directory was copied out of the checkout and

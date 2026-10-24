@@ -84,6 +84,8 @@ Runnable examples are in [`examples/`](examples): `price_with_greeks`, `var_from
 cd python && pip install maturin numpy && maturin develop --release
 ```
 
+The PyPI distribution is named `quantkit-rs` (the name `quantkit` belongs to an unrelated project); the import name is `quantkit`. Nothing has been published yet.
+
 ```python
 import numpy as np, quantkit as qk
 

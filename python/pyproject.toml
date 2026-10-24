@@ -3,7 +3,7 @@ requires = ["maturin>=1.5,<2.0"]
 build-backend = "maturin"
 
 [project]
-name = "quantkit"
+name = "quantkit-rs"
 description = "Options pricing, Greeks, implied volatility, Monte Carlo, vol surfaces and risk metrics (Rust core)."
 readme = "README.md"
 requires-python = ">=3.9"
