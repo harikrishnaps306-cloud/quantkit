@@ -17,6 +17,11 @@ classifiers = [
 ]
 dynamic = ["version"]
 
+[project.urls]
+Repository = "https://github.com/harikrishnaps306-cloud/quantkit"
+Issues = "https://github.com/harikrishnaps306-cloud/quantkit/issues"
+Changelog = "https://github.com/harikrishnaps306-cloud/quantkit/blob/master/CHANGELOG.md"
+
 [tool.maturin]
 module-name = "quantkit._quantkit"
 python-source = "."
