@@ -1,6 +1,6 @@
 # quantkit (Python)
 
-Python bindings for the Rust [`quantkit`](../README.md) library (not published to PyPI).
+Python bindings for the Rust [`quantkit`](../README.md) library. Install with `pip install quantkit-rs`; the import name is `quantkit`.
 
 ```python
 import numpy as np
