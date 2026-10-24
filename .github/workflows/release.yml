@@ -1,0 +1,188 @@
+name: Release
+
+# MANUAL ONLY. Nothing here runs on push, pull request or tag.
+#
+# Run it from the Actions tab ("Run workflow") on the branch you intend to
+# release. With `publish` left false (the default) it only builds and tests the
+# artifacts and uploads them as a downloadable workflow artifact; nothing leaves
+# GitHub. With `publish` true it additionally uploads to PyPI using trusted
+# publishing (OpenID Connect, no API token stored anywhere), but only from
+# `master`, only if `confirm_version` equals the crate version, and only after
+# the `pypi` environment's protection rules (configure required reviewers there)
+# are satisfied.
+#
+# It does not publish to crates.io and does not create tags or GitHub releases;
+# see docs/RELEASING.md for those steps.
+#
+# Wheels: one abi3 wheel per platform that CI exercises (Linux x86-64 manylinux,
+# macOS arm64, Windows x86-64) plus the sdist. Other platforms are unsupported
+# (docs/VERSIONING.md), so no wheel is built for them.
+
+on:
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: "Upload to PyPI after the checks pass (false = build and test only)"
+        type: boolean
+        default: false
+      confirm_version:
+        description: "Required only when publishing: type the exact version being released (for example 0.2.0)"
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  guards:
+    name: release guards
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: versions agree and third-party notices are current
+        run: |
+          python3 .github/scripts/check_versions.py
+          cargo fetch --manifest-path python/Cargo.toml --locked
+          python3 .github/scripts/gen_notices.py --check
+      - name: read the version
+        id: v
+        run: |
+          version=$(python3 -c "import re,pathlib; print(re.search(r'^version\s*=\s*\"([^\"]+)\"', pathlib.Path('Cargo.toml').read_text(), re.M).group(1))")
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "crate version: $version"
+      - name: publishing is only allowed from master with a matching confirmation
+        if: ${{ inputs.publish }}
+        env:
+          VERSION: ${{ steps.v.outputs.version }}
+          CONFIRM: ${{ inputs.confirm_version }}
+        run: |
+          if [ "$GITHUB_REF" != "refs/heads/master" ]; then echo "publishing is only allowed from master (this run: $GITHUB_REF)"; exit 1; fi
+          if [ "$CONFIRM" != "$VERSION" ]; then echo "confirm_version '$CONFIRM' does not equal the crate version '$VERSION'"; exit 1; fi
+
+  wheels:
+    name: wheel (${{ matrix.name }})
+    needs: guards
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - { name: linux-x86_64, os: ubuntu-24.04, target: x86_64-unknown-linux-gnu, manylinux: auto }
+          - { name: macos-arm64, os: macos-latest, target: aarch64-apple-darwin, manylinux: "off" }
+          - { name: windows-x86_64, os: windows-latest, target: x86_64-pc-windows-msvc, manylinux: "off" }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: PyO3/maturin-action@v1
+        with:
+          command: build
+          target: ${{ matrix.target }}
+          manylinux: ${{ matrix.manylinux }}
+          args: --release --locked --manifest-path python/Cargo.toml --out dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheel-${{ matrix.name }}
+          path: dist/*.whl
+          if-no-files-found: error
+
+  sdist:
+    name: sdist
+    needs: guards
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: PyO3/maturin-action@v1
+        with:
+          command: sdist
+          args: --manifest-path python/Cargo.toml --out dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sdist
+          path: dist/*.tar.gz
+          if-no-files-found: error
+
+  verify:
+    name: verify (${{ matrix.name }}, Python ${{ matrix.python }}, ${{ matrix.numpy }})
+    needs: [wheels, sdist]
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - { name: linux-x86_64, os: ubuntu-24.04, python: "3.9", numpy: "numpy==1.22.0" }
+          - { name: linux-x86_64, os: ubuntu-24.04, python: "3.13", numpy: "numpy" }
+          - { name: macos-arm64, os: macos-latest, python: "3.13", numpy: "numpy" }
+          - { name: windows-x86_64, os: windows-latest, python: "3.9", numpy: "numpy==1.22.0" }
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: wheel-${{ matrix.name }}
+          path: dist
+      - name: install the built wheel in a clean virtualenv and test it
+        run: |
+          ls dist
+          python -m venv .venv-verify
+          if [ -d .venv-verify/Scripts ]; then PY="$PWD/.venv-verify/Scripts/python"; else PY="$PWD/.venv-verify/bin/python"; fi
+          "$PY" -m pip install dist/*.whl pytest "${{ matrix.numpy }}"
+          mkdir verify-tests && cp python/tests/*.py verify-tests/
+          cd verify-tests
+          "$PY" -c "import sys, numpy, quantkit, importlib.metadata as m; d = m.distribution('quantkit-rs'); print(d.metadata['Name'], d.version, 'numpy', numpy.__version__, sys.version.split()[0]); assert 'site-packages' in quantkit.__file__.replace(chr(92), '/'); names = [str(f) for f in d.files]; assert any(n.endswith('THIRD_PARTY_NOTICES.txt') for n in names), 'notices missing'; assert any(n.endswith('LICENSE-MIT.txt') for n in names) and any(n.endswith('LICENSE-APACHE.txt') for n in names), 'licences missing'"
+          "$PY" -m pytest -q -p no:cacheprovider
+
+  check-distributions:
+    name: metadata check of the distributions
+    needs: verify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: "{wheel-*,sdist}"
+          path: dist
+          merge-multiple: true
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: twine check and file inventory
+        run: |
+          python -m pip install twine
+          ls -l dist
+          test "$(ls dist/*.whl | wc -l)" -eq 3
+          test "$(ls dist/*.tar.gz | wc -l)" -eq 1
+          python -m twine check --strict dist/*
+
+  publish:
+    name: publish to PyPI (trusted publishing)
+    # Skipped unless explicitly requested; see the guards job for the conditions.
+    if: ${{ inputs.publish && github.ref == 'refs/heads/master' }}
+    needs: [guards, check-distributions]
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/project/quantkit-rs/
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: "{wheel-*,sdist}"
+          path: dist
+          merge-multiple: true
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist

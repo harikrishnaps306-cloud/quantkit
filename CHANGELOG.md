@@ -28,6 +28,7 @@ differences from the earlier 0.2.0 development snapshot (commit `02a6393`), list
 so that code written against it can be migrated.
 
 ### Release preparation
+- Added a manual-only `Release` workflow (`.github/workflows/release.yml`) that builds Linux x86-64, macOS arm64 and Windows x86-64 wheels plus the sdist, tests them in clean environments, and can upload to PyPI through trusted publishing; and `docs/RELEASING.md`. It has not published anything.
 - Added `docs/VERSIONING.md`: the `0.x` policy (breaking changes only in minor releases; what counts as breaking).
 - The Python wheel and sdist now carry `THIRD_PARTY_NOTICES.txt` (licence texts of the 29 statically linked Rust packages), generated and checked in CI by `.github/scripts/gen_notices.py`.
 - The Python distribution is renamed `quantkit-rs` because `quantkit` is taken on PyPI. The import name stays `quantkit`.
