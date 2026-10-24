@@ -65,7 +65,7 @@ tests passed against the installed copy.
 
 Results are job and step conclusions read from the GitHub API; logs were not read
 in full. Commits: first full pass `9a28f6e`; latest verified at the time of writing
-`62bab38` (CI 13 of 13, and the release dry run below). Later commits have their
+`952203e` (CI 13 of 13, and the release dry run below). Later commits have their
 own runs in the Actions tab.
 
 The first run (commit `dcc3b18`) passed 12 of 13; the failure was the Ubuntu
@@ -90,13 +90,28 @@ same way) and on the abi3 design, not on a test of the release file. CPython 3.1
 3.12 and 3.14 were tested only locally on Windows (table above), and not at all
 on Linux or macOS.
 
-### Release workflow dry run (publishing off)
+### Release workflow dry runs (publishing off)
 
-Run 40119810048 on `62bab38`: three wheels and the sdist built; wheels installed
-and tested as in the table; `twine check --strict` passed; the PyPI job was
-skipped. The inspection of platform tags, dependency metadata and licences
-(`.github/scripts/inspect_dists.py`) and the pip check that NumPy 1.21.6 is
-refused were added afterwards and run in the next dry run.
+Run 40125380060 on `952203e` (CI on the same commit also 13 of 13): three wheels
+and the sdist built; each wheel installed and tested as in the table above; pip
+refused NumPy 1.21.6 together with the Linux and Windows 3.9 wheels; `twine check
+--strict` passed; `.github/scripts/inspect_dists.py` passed on all four files; the
+PyPI job was skipped. Earlier dry runs: 40119810048 (`62bab38`, passed, before the
+inspection steps existed) and 40124972016 (`100b390`, failed in the NumPy-floor
+step on Windows because that virtualenv's bundled pip predated `--dry-run`; a
+bug in the check, fixed in `952203e`).
+
+Platform tags of the artifacts, as printed by the inspection step:
+
+| file | tags |
+|---|---|
+| Linux | `cp39-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64` |
+| macOS | `cp39-abi3-macosx_11_0_arm64` |
+| Windows | `cp39-abi3-win_amd64` (checked on the locally built wheel) |
+| sdist | `quantkit_rs-0.2.0.tar.gz` |
+
+So the Linux wheel needs glibc 2.17 or newer, and the macOS wheel runs on Apple
+silicon with macOS 11 or newer; Intel Macs, Linux ARM and musl get no wheel.
 
 ## Not tested
 
