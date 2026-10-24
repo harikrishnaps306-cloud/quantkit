@@ -54,7 +54,7 @@ jobs:
           if [ -d venv/Scripts ]; then PY="$PWD/venv/Scripts/python"; else PY="$PWD/venv/bin/python"; fi
           "$PY" -m pip install --quiet --upgrade pip
           "$PY" -m pip install --only-binary=:all: --no-cache-dir "quantkit-rs==$VERSION" "$NUMPY" pytest
-          "$PY" -m pip show -f quantkit-rs | head -20
+          "$PY" -m pip show quantkit-rs
       - name: import from site-packages and smoke test
         run: |
           if [ -d venv/Scripts ]; then PY="$PWD/venv/Scripts/python"; else PY="$PWD/venv/bin/python"; fi
