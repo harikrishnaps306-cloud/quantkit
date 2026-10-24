@@ -122,7 +122,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { os: ubuntu-latest, python: "3.9", numpy: "numpy==1.21.6" }
+          # Pinned: ubuntu-latest is Ubuntu 26.04, for which setup-python has no CPython 3.9.
+          - { os: ubuntu-24.04, python: "3.9", numpy: "numpy==1.21.6" }
           - { os: ubuntu-latest, python: "3.11", numpy: "numpy==1.26.4" }
           - { os: ubuntu-latest, python: "3.13", numpy: "numpy" }
           - { os: windows-latest, python: "3.9", numpy: "numpy==1.21.6" }

@@ -55,7 +55,7 @@ release for that interpreter):
 
 | runner | CPython | NumPy |
 |---|---|---|
-| ubuntu-latest | 3.9 | 1.21.6 |
+| ubuntu-24.04 (pinned; `ubuntu-latest` has no CPython 3.9) | 3.9 | 1.21.6 |
 | ubuntu-latest | 3.11 | 1.26.4 |
 | ubuntu-latest | 3.13 | newest |
 | windows-latest | 3.9 | 1.21.6 |
