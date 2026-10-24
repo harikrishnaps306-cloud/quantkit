@@ -8,6 +8,7 @@ Scope: what was run, what it found, and what it does not cover.
 |---|---|---|---|
 | Rust, library crate (all features, dev-dependencies included), newest compatible lockfile, 90 crates | `cargo audit 0.22.2` | RustSec advisory-db, 1,352 advisories, fetched 2026-10-24 | no vulnerabilities and no warnings reported |
 | Rust, Python-binding crate (pyo3 0.30, numpy 0.30), 36 crates | `cargo audit 0.22.2` | same | no vulnerabilities and no warnings reported |
+| Rust, library crate, Rust 1.74 fallback lockfile, 80 crates | `cargo audit 0.22.2` | same | no vulnerabilities and no warnings reported |
 | Python, NumPy 1.21.6 (the declared floor) | `pip-audit` (OSV/PyPI data) | live | **1 known vulnerability: PYSEC-2021-855, fixed in 1.22** |
 | Python, NumPy 1.26.4 and 2.5.4 | `pip-audit` | live | none known |
 
@@ -35,8 +36,9 @@ No change was made.
   printed and were not.
 * Transitive dependencies of `pytest`, `maturin` and the test environment were
   not scanned; only NumPy, the one runtime dependency of the wheel, was.
-* The audit ran on the newest compatible versions. The Rust 1.74 fallback
-  lockfile pins older dependency releases; it was not audited separately.
+* The audit ran on the newest compatible versions and, separately, on the Rust
+  1.74 resolver-fallback lockfile (80 crates, older releases): no
+  vulnerabilities or warnings in either.
 
 ## Licences
 

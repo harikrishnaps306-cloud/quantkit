@@ -9,7 +9,13 @@ comparison is shown and described.
 * OS: Windows 11 (10.0.26300), laptop power profile as found (not tuned)
 * Toolchains: Rust 1.97.1 (release profile), Python 3.11.9, NumPy 2.4.6,
   SciPy 1.17.1
-* Date: 2026-10-23
+* Date: 2026-10-23 (Python section and the 400,000-option sweep); 2026-10-24 for the
+  Rust criterion tables, re-measured on commit `2b5e59a` plus the uncommitted
+  extra benchmarks in `benches/pricing.rs`, serial then parallel, one run each
+  with nothing else using the machine. Criterion's own `change:` lines in the
+  output compare serial against the stored parallel run and are meaningless;
+  they were ignored. An earlier attempt the same day overlapped with another
+  benchmark process and was discarded.
 
 ## The cost of the accurate far-tail method
 
@@ -19,8 +25,8 @@ speed, and it is not free:
 
 | scalar benchmark (criterion, serial) | before | after |
 |---|---|---|
-| `bsm::price`, S=100 K=105 call | 17.8 ns | 32.4 ns |
-| `implied_vol::solve`, same option | 118 ns | 883 ns |
+| `bsm::price`, S=100 K=105 call | 17.8 ns | 34.8 ns |
+| `implied_vol::solve`, same option | 118 ns | 1.01 us |
 
 The pricer evaluates the ordinary formula when an error estimate says it is
 accurate to about `2e-14` and the stable quadrature method otherwise (about
@@ -40,23 +46,68 @@ code, results identical (checked by the test-suite, not by the benchmark).
 
 | benchmark | serial | parallel |
 |---|---|---|
-| `batch::price`, 100k options | 9.96 ms (10.0 M/s) | 0.751 ms (133 M/s) |
-| `batch::greeks`, 100k | 4.92 ms (20.3 M/s) | 1.24 ms (80.6 M/s) |
-| `detailed::price`, 100k | 13.2 ms (7.6 M/s) | 1.43 ms (69.9 M/s) |
-| `detailed::implied_vol`, 20k | 51.7 ms (0.39 M/s) | 3.49 ms (5.7 M/s) |
-| `mc::european`, 1M paths | 12.3 ms (81 M paths/s) | 0.776 ms (1.29 G paths/s) |
-| `mc::american_lsm`, 20k train + 20k eval, 50 steps | 37.3 ms | 32.1 ms |
-| `dataset::generate`, 100k rows | 101 ms | 101 ms (not parallelised) |
+| `batch::price`, 100k options | 10.25 ms (9.8 M/s) | 0.826 ms (121 M/s) |
+| `batch::greeks`, 100k | 5.02 ms (19.9 M/s) | 1.27 ms (78.7 M/s) |
+| `detailed::price`, 100k | 13.68 ms (7.3 M/s) | 1.49 ms (67.3 M/s) |
+| `detailed::implied_vol`, 20k | 53.96 ms (0.37 M/s) | 3.85 ms (5.2 M/s) |
+| `mc::european`, 1M paths | 12.38 ms (81 M paths/s) | 0.911 ms (1.10 G paths/s) |
+| `mc::american_lsm`, 20k train + 20k eval, 50 steps | 37.38 ms | 32.79 ms |
+| `dataset::generate`, 100k rows | 106.3 ms | 103.1 ms (not parallelised) |
 
 For reference, the previous formulas on the same benchmark inputs ran
 `batch::price` at 2.65 ms serial and `detailed::implied_vol` (20k) at 10.8 ms.
 
-The Monte Carlo rows were re-measured after the overflow-safe rewrite (the
-European estimator is about 30% slower serially than before it, 9.4 ms for 1M
-paths; the other rows are from the earlier session).
+Between the 2026-10-23 and 2026-10-24 measurements the library changed only
+in the audit commit (`2b5e59a`). The differences in the tables (up to about
++17% for parallel Monte Carlo, otherwise within about 5%) come from one run per
+configuration on a laptop with default power settings and cannot be attributed
+to the code changes without repeated runs, which were not done.
 
-Also in `benches/pricing.rs` (serial): binomial American put 5.7 us / 112 us /
-430 us at 100 / 500 / 1000 steps.
+Also in `benches/pricing.rs` (serial): binomial American put 5.97 us / 118 us /
+447 us at 100 / 500 / 1000 steps (were 5.7 / 112 / 430 us; about +4-5%, with the
+same caveat).
+
+### Extreme binomial trees (log-domain rollback)
+
+`binomial::price` takes the log-domain path when the node-to-node jump times the
+step count exceeds 600 (see `NUMERICS.md`). Case: S = K = 100, volatility 100,
+expiry 1, call, serial. Ordinary trees do not use this path.
+
+| steps | European | American |
+|---|---|---|
+| 100 | 45.2 us | 116.0 us |
+| 500 | 1.084 ms | 2.752 ms |
+| 1000 | 4.379 ms | 10.77 ms |
+
+For comparison, an ordinary American put tree at 1000 steps takes 447 us, so the
+extreme path is about 24x slower for American exercise at the same step count
+(different payoff and parameters, so this is a rough scale, not a like-for-like
+regression). The cause was not profiled. There is no earlier measurement of this
+path; before the fix it returned wrong values (zero for a call worth about 100).
+
+### Risk functions, 1,000,000 returns (serial, median)
+
+| function | time |
+|---|---|
+| `historical_var` (99%) | 3.01 ms |
+| `historical_cvar` (99%) | 3.27 ms |
+| `parametric_var` (99%) | 10.21 ms |
+| `sharpe_ratio` | 13.16 ms |
+| `sortino_ratio` | 8.00 ms |
+| `max_drawdown` | 3.08 ms |
+| `annualized_volatility` | 5.81 ms |
+
+The audit commit made these scale-safe (normalised arithmetic); this is the
+first measurement of them, so there is no before/after comparison and no claim
+about how much the scaling cost.
+
+### Normal quantile (`dist::norm_inv_cdf`, serial)
+
+| input | time |
+|---|---|
+| p = 0.3 | 12.7 ns |
+| p = 1e-6 | 46.8 ns |
+| p = 1e-300 (log-tail refinement) | 611 ns |
 
 Notes: LSM parallelises only the evaluation phase, so it gains little. Parallel
 speed-ups depend on the number of cores and will be smaller on smaller machines.
@@ -101,31 +152,6 @@ How to read this fairly:
 * Not measured: comparisons with `py_vollib_vectorized`, `pyvolr`, QuantLib,
   or any implied-volatility competitor. Their speed claims are theirs; none
   were reproduced here.
-
-## Refresh of 24 October 2026 (commit `2b5e59a` plus new benches)
-
-Same machine and toolchain as above, criterion, serial unless noted, one run each, laptop not tuned; differences under about 10% are within noise. The tables above are from earlier code and were not re-measured except where listed here.
-
-| benchmark | median |
-|---|---|
-| `bsm::price` | 40.8 ns (earlier table: 32.4 ns) |
-| `implied_vol::solve` | 1.05 us (earlier: 883 ns) |
-| binomial American put, 100 / 500 / 1000 steps | 6.9 / 128.6 / 483 us |
-| **extreme log-domain tree** (S=K=100, sigma=100, T=1), European 100 / 500 / 1000 steps | 48.5 us / 1.33 ms / 4.72 ms |
-| same, American 100 / 500 / 1000 steps | 136 us / 3.28 ms / 12.1 ms |
-| risk, 1M returns: historical VaR / CVaR | 4.47 / 4.62 ms |
-| parametric VaR / Sharpe / Sortino | 10.7 / 14.2 / 8.5 ms |
-| max drawdown / annualized volatility | 3.85 / 11.1 ms |
-| `norm_inv_cdf` p=0.3 / 1e-6 / 1e-300 | 30 / 51 / 632 ns |
-| `batch::price`, 100k: serial / parallel | 10.6 ms / 1.62 ms |
-| `batch::greeks`, 100k: serial / parallel | 5.07 / 1.91 ms |
-| `detailed::price`, 100k: serial / parallel | 13.8 / 2.99 ms |
-| `detailed::implied_vol`, 20k: serial / parallel | 56.4 / 7.78 ms |
-| `mc::european`, 1M: serial / parallel | 13.2 / 1.60 ms |
-| `mc::american_lsm` serial | 39.4 ms |
-| `dataset::generate`, 100k | 104.6 ms |
-
-The extreme American tree costs about 20x to 25x the ordinary American put at equal step count (136 vs 6.9 us, 3.28 ms vs 129 us, 12.1 ms vs 483 us; the cost is `ln`/`exp` per node), and only trees with `volatility * sqrt(T * steps) > 600` take it. Sharpe and Sortino now copy and rescale the input; I did not profile how much of their time that accounts for. The parallel runs are noisier than those in the earlier table (for example `batch::price` parallel was 0.75 ms then, 1.62 ms now); the parallel figures should not be compared across the two tables. The Python benchmark was not re-run.
 
 ## Reproducing
 
